@@ -16,6 +16,23 @@ from matplotlib.cm import get_cmap
 from matplotlib.gridspec import GridSpec
 import seaborn as sns
 
+def sort_neurons(X, scale, mu):
+  N, T, K = X.shape[0], X.shape[1], scale.shape[0]
+  A, B  = [], []
+  for i in range(N):
+    if scale[0][i] > scale[1][i]:
+      A.append(i)
+    else:
+      B.append(i)
+  A.sort(key = lambda x: mu[0][x])
+  B.sort(key = lambda x: mu[1][x])
+  return A + B
+
+def plot_sorted_neurons(data):
+  plt.figure(figsize=(12, 8))
+  plt.scatter(torch.nonzero(data.T)[:,0], torch.nonzero(data.T)[:,1], s=10)
+  plt.show()
+
 palette = sns.xkcd_palette(["windows blue",
                             "red",
                             "medium green",
