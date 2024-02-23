@@ -28,7 +28,8 @@ def pred(w, a, b):
 
 def log_probability(X, a, b, W):
   """
-  calculate the log probability given data X and estimated parameters a, b, W
+  calculate the log probability given data X 
+  and estimated parameters a, b, W
   """
   N, T = X.shape
   K, N, D = W.shape
@@ -42,33 +43,35 @@ def m_step(X, b, a, scale, mu, log_sigma, D):
     - X: (N, T)
     - b: (N)
     - a: (K, T)
-    - scale(actually log_scale that softmax to scale), mu, log_sigma: (K, N)
+    - scale: (K, N) the log_scale that softmax to the true scale of the gaussian pdf
+    - mu: (K, N) mean of the gaussian
+    - log_sigma: (K, N) log of std of gaussian
+      the weight W is determined by (scale, mu, log_sigma)
     - D: delay
 
   Returns:
-  updated parameters in the m-step of an EM algorithm
+  updated parameters in the m-step of an EM algorithm:
+  b, a, scale, mu, log_sigma
   """
 
   N, T = X.shape
   K, N = scale.shape
 
 
-  W = torch.exp(dist.Normal(mu, torch.exp(log_sigma)).log_prob(torch.arange(D).unsqueeze(1).unsqueeze(1))).permute(1,2,0)\
+  W = torch.exp(dist.Normal(mu, torch.exp(log_sigma)).log_prob(torch.arange(D)[:, None, None, ...])).permute(1,2,0)\
    * F.softmax(scale, dim=1).unsqueeze(-1).expand(-1, -1, D) #(K,N,D)
 
-  for _ in range(1):
-  # update b
-    lambda_nt = b.view(N,1) + F.conv1d(a, torch.flip(W.permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
-    r_nt = X / (lambda_nt + 1e-4) # (N, T)
 
-    b = torch.sum(r_nt, axis=1) * b / T
+  # update b
+  lambda_nt = b.view(N,1) + F.conv1d(a, torch.flip(W.permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
+  r_nt = X / (lambda_nt + 1e-4) # (N, T)
+  b = torch.sum(r_nt, axis=1) * b / T
 
   # update a
-    lambda_nt = b.view(N,1) + F.conv1d(a, torch.flip(W.permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
-    r_nt = X / (lambda_nt + 1e-4)
-
-    beta_kt = torch.sum(W, dim=(1,2)).unsqueeze(1).repeat(1,T) # (K, T)
-    a = a * F.conv1d(r_nt, W,  padding=D-1)[:,D-1:] / beta_kt
+  lambda_nt = b.view(N,1) + F.conv1d(a, torch.flip(W.permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
+  r_nt = X / (lambda_nt + 1e-4)
+  beta_kt = torch.sum(W, dim=(1,2)).unsqueeze(1).repeat(1,T) # (K, T)
+  a = a * F.conv1d(r_nt, W,  padding=D-1)[:,D-1:] / beta_kt
 
   # update scale, mu, log_sigma
   scale = scale.clone().detach().requires_grad_(True)
@@ -77,9 +80,10 @@ def m_step(X, b, a, scale, mu, log_sigma, D):
   optimizer = optim.Adam([scale, mu, log_sigma], lr=0.01)
 
   def f(s, mu, sigmasq):
-    W = torch.exp(dist.Normal(mu, torch.exp(log_sigma)).log_prob(torch.arange(D).unsqueeze(1).unsqueeze(1))).permute(1,2,0)\
+    # returns the negative Expected log likelihood
+    W = torch.exp(dist.Normal(mu, torch.exp(log_sigma)).log_prob(torch.arange(D)[:, None, None, ...])).permute(1,2,0)\
      * F.softmax(scale, dim=1).unsqueeze(-1).expand(-1, -1, D)
-    log_W = dist.Normal(mu, torch.exp(log_sigma)).log_prob(torch.arange(D).unsqueeze(1).unsqueeze(1)).permute(1,2,0)\
+    log_W = dist.Normal(mu, torch.exp(log_sigma)).log_prob(torch.arange(D)[:, None, None, ...]).permute(1,2,0)\
      + torch.log(F.softmax(scale, dim=1).unsqueeze(-1).expand(-1, -1, D))
     #W = 1 / (torch.sqrt(2 * torch.pi * sigmasq.unsqueeze(-1))) * torch.exp(- 1 / (2 * sigmasq.unsqueeze(-1)) * (torch.arange(D) - mu.unsqueeze(-1))** 2)
     lambda_nt = b.view(N,1) + F.conv1d(a, torch.flip(W.permute(1,0,2), [2]), padding=D-1)[:,:-D+1]
@@ -121,16 +125,14 @@ def em(X,
     # Initialize  parameters
     b = torch.rand(N)
     a = torch.rand(K,T)
-    #W = torch.rand(K, N, D)
     scale = torch.randn(K, N)
     mu = torch.ones(K, N) * 5
-    #mu = torch.ones(K, N) * D / 2
     log_sigma = torch.ones(K,N)
 
     # Run EM
     for _ in trange(n_iter):
         b, a, scale, mu, log_sigma = m_step(X, b, a, scale, mu, log_sigma, D)
-        W = torch.exp(dist.Normal(mu, torch.exp(log_sigma)).log_prob(torch.arange(D).unsqueeze(1).unsqueeze(1))).permute(1,2,0)\
+        W = torch.exp(dist.Normal(mu, torch.exp(log_sigma)).log_prob(torch.arange(D)[:, None, None, ...])).permute(1,2,0)\
          * F.softmax(scale, dim=1).unsqueeze(-1).expand(-1, -1, D)
         lps.append(log_probability(X, a, b, W))
 
