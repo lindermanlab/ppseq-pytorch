@@ -92,20 +92,19 @@ def em(X,
     N, T = X.shape
 
     # Initialize  parameters
-    b = torch.rand(N, device=device) + 10000
+    b = torch.rand(N, device=device)
     a = torch.rand(K, T, device=device) + 1e-4
     scale = torch.rand(K, N, requires_grad=True, device=device)
-    mu = torch.tensor(torch.ones(K, N, requires_grad=True, device=device) * D/2, requires_grad=True, device=device)
+    mu = torch.tensor(torch.ones(K, N) * D/2, requires_grad=True, device=device)
     log_sigma = torch.ones(K, N, requires_grad=True, device=device)
 
     model = compute_weight(D)
     model.to(device)
-    W = torch.exp(dist.Normal(mu, torch.exp(log_sigma)).log_prob(torch.arange(D, device=device)[:, None, None, ...])).permute(1,2,0)\
-   * F.softmax(scale, dim=1).unsqueeze(-1).expand(-1, -1, D).detach() #(K,N,D)
-    #W = true_w.to(device)
-    #a = true_a.to(device)
-    b = estimate_b(X)
 
+    W = (torch.exp(dist.Normal(mu, torch.exp(log_sigma)).log_prob(torch.arange(D, device=device)[:, None, None, ...])).permute(1,2,0)\
+   * F.softmax(scale, dim=1).unsqueeze(-1).expand(-1, -1, D)).detach() #(K,N,D)
+
+    b = estimate_b(X)
 
     def m_step(X):
       """
@@ -144,9 +143,8 @@ def em(X,
       r_nt = X / (lambda_nt +1e-7 )
       beta_knd = torch.sum(a, dim=1)[:,None,None].repeat(1,N,D)
       conv = torch.flip(F.conv1d(a.unsqueeze(1), r_nt.unsqueeze(1),padding=D-1)[:,:,:-D+1], [2])
-      W = torch.clip((W * conv - 0) / beta_knd, 0)
+      W = (W * conv - 0) / beta_knd.detach()
 
-    #initialize with true parameters
 
     # Run EM
     for _ in trange(n_iter):
@@ -155,7 +153,6 @@ def em(X,
         lps.append(ll)
 
     loss_hist = []
-    W_prediction = W.clone()
     
     optimizer = optim.Adam([scale, mu, log_sigma], lr=0.01)
     #optimizer = optim.LBFGS([scale, mu, log_sigma], lr=0.01)
@@ -167,6 +164,8 @@ def em(X,
         loss = criterion(W, W_prediction)
         loss_hist.append(loss)
         loss.backward()
+        #max_norm = 1.0  # Adjust this value according to your needs
+        #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
         optimizer.step()
 
     """
