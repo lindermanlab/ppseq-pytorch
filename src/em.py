@@ -9,6 +9,10 @@ import torch.optim as optim
 
 from tqdm.auto import trange
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+if not torch.cuda.is_available():
+    print('cpu')
+
 def pred(w, a, b):
   """
   predict mean
