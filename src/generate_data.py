@@ -14,6 +14,56 @@ from tqdm.auto import trange
 from scipy.signal import find_peaks
 from scipy.optimize import linear_sum_assignment
 
+def generate_data_v4(N=50, T=1000, K=2, D=5):
+  """
+  -X: (N, T)
+  more extreme version of v3
+  """
+  mu = D/2 + (torch.rand(K,N) - 0.5) * D/3
+  true_w = torch.exp(dist.Normal(mu, 0.5).log_prob(torch.arange(D).unsqueeze(1).unsqueeze(1))).permute(1,2,0).expand(K,N,D)
+  #\ * 2 * torch.tensor(torch.rand(K,N, 1)).expand(K, N, D)
+
+  #true_w = torch.linspace(D, D/2, D).repeat(K,N,1)
+  true_w[0, N//2:,:] = 0
+  true_w[1, :N//2, :] = 0
+
+  true_a = torch.zeros((K,T))
+  t = 10
+  t1 = np.random.choice(T-7,  t, replace=False)
+  t2 = np.random.choice(T-10, t, replace=False)
+  true_a[0, t1] = 15
+  true_a[1, t2] = 15
+  true_b = torch.ones(N) * 0.04
+  lambdas = true_b.view(N,1) + F.conv1d(true_a, torch.flip(true_w.permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
+  X = torch.poisson(lambdas)
+  return X, lambdas, true_b, true_a, true_w
+
+def generate_data_v3(N=50, T=1000, K=2, D=10):
+  """
+  -X: (N, T)
+  """
+  mu = D/2 + (torch.rand(K,N) - 0.5) * D/3
+  true_w = torch.exp(dist.Normal(mu, 1).log_prob(torch.arange(D).unsqueeze(1).unsqueeze(1))).permute(1,2,0).expand(K,N,D)
+  #\ * 2 * torch.tensor(torch.rand(K,N, 1)).expand(K, N, D)
+
+  #true_w = torch.linspace(D, D/2, D).repeat(K,N,1)
+  true_w[0, N//2:,:] = 0
+  true_w[1, :N//2, :] = 0
+
+  true_a = torch.zeros((K,T))
+  t = int(T / np.maximum(200, T**0.7))
+  t1 = np.random.choice(T-7,  t, replace=False)
+  t2 = np.random.choice(T-10, t, replace=False)
+  true_a[0, t1] = 100
+  true_a[1, t2] = 100
+  true_b = torch.ones(N) * 0.01
+  lambdas = true_b.view(N,1) + F.conv1d(true_a, torch.flip(true_w.permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
+  X = torch.poisson(lambdas)
+  return X, lambdas, true_b, true_a, true_w
+
+
+
+
 def generate_templates(num_channels, len_waveform, num_neurons):
     # Make (semi) random templates
     templates = []
@@ -37,7 +87,8 @@ def generate_templates(num_channels, len_waveform, num_neurons):
     return torch.abs(torch.stack(templates))
 
 
-def generate(num_timesteps,
+
+def generate_data_v1(num_timesteps,
              num_channels,
              len_waveform,
              num_neurons,
@@ -86,7 +137,7 @@ def generate(num_timesteps,
 
     return templates, amplitudes, true_b, data
 
-def generate_data(N=8, T=2000, K=5, D=10):
+def generate_data_v0(N=8, T=2000, K=5, D=10):
   """
   -X: (N, T)
   """
