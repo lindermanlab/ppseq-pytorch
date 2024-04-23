@@ -13,6 +13,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 if not torch.cuda.is_available():
     print('cpu')
 
+
 def pred(w, a, b):
   """
   predict mean
@@ -26,7 +27,6 @@ def pred(w, a, b):
 
   K,N,D = w.shape
   lambdas = b.view(N,1) + F.conv1d(a, torch.flip(w.permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
-
   return lambdas
 
 def log_probability(X, a, b, W):
@@ -41,6 +41,7 @@ def log_probability(X, a, b, W):
   lambda_nt = torch.clamp(lambda_nt, min=1e-7)
   return torch.sum(dist.Poisson(lambda_nt).log_prob(X))
 
+
 class compute_weight(nn.Module):
     def __init__(self, D):
         super(compute_weight, self).__init__()
@@ -49,13 +50,15 @@ class compute_weight(nn.Module):
     def forward(self, scale, mu, log_sigma):
         delay = torch.arange(self.D, device=scale.device)
         return torch.exp(dist.Normal(mu, torch.exp(log_sigma)).log_prob(delay[:, None, None, ...])).permute(1,2,0)\
-   * F.softmax(scale, dim=1).unsqueeze(-1).expand(-1, -1, self.D)
+        * F.softmax(scale, dim=1).unsqueeze(-1).expand(-1, -1, self.D)
+
 
 def quantile_mean(arr):
     low = np.quantile(arr, 0.0)
     high = np.quantile(arr, 0.85)
     filtered_data = arr[(arr >= low) & (arr <= high)]
     return np.mean(filtered_data)
+
 
 def estimate_b(X):
     N, T = X.shape
@@ -66,6 +69,7 @@ def estimate_b(X):
         #b[i] = quantile_mean(averages[i])
         b[i] = np.median(averages[i])
     return torch.tensor(b).float().to(device)
+
 
 def em(X,
        K,
@@ -134,16 +138,16 @@ def em(X,
 
       # update a
       lambda_nt = b.view(N,1) + F.conv1d(a, torch.flip(W.permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
-      r_nt = X / (lambda_nt +1e-7 )
+      r_nt = X / (lambda_nt +1e-7)
       beta_kt = torch.sum(W, dim=(1,2)).unsqueeze(1).repeat(1,T) # (K, T)
       a = torch.clip((a * F.conv1d(r_nt, W,  padding=D-1)[:,D-1:] + alpha_a0 - 1) / (beta_kt + beta_a0), 0)
 
-      # update W, scale, mu, log_sigma
+      # update W
       lambda_nt = b.view(N,1) + F.conv1d(a, torch.flip(W.permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
-      r_nt = X / (lambda_nt +1e-7 )
+      r_nt = X / (lambda_nt +1e-7)
       beta_knd = torch.sum(a, dim=1)[:,None,None].repeat(1,N,D)
       conv = torch.flip(F.conv1d(a.unsqueeze(1), r_nt.unsqueeze(1),padding=D-1)[:,:,:-D+1], [2])
-      W = (W * conv - 0) / beta_knd.detach()
+      W = (W * conv) / beta_knd.detach()
 
 
     # Run EM
@@ -155,7 +159,6 @@ def em(X,
     loss_hist = []
     
     optimizer = optim.Adam([scale, mu, log_sigma], lr=0.01)
-    #optimizer = optim.LBFGS([scale, mu, log_sigma], lr=0.01)
     criterion = nn.MSELoss()
 
     for i in trange(10000):
@@ -164,48 +167,6 @@ def em(X,
         loss = criterion(W, W_prediction)
         loss_hist.append(loss)
         loss.backward()
-        #max_norm = 1.0  # Adjust this value according to your needs
-        #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
         optimizer.step()
-
-    """
-    for i in trange(10):
-      def closure():
-        optimizer.zero_grad()
-        W_prediction = model(scale, mu, log_sigma)
-        loss = criterion(W, W_prediction)
-        loss_hist.append(loss.item())
-        loss.backward()
-        return loss
-
-      optimizer.step(closure)
-
-    prev_loss = float('inf')
-    loss_stable_count = 0
-    stability_threshold = 1e-4  # Define your own threshold for stability
-
-    for epoch in trange(10000):
-      optimizer.zero_grad()
-      W_prediction = model(scale, mu, log_sigma)
-      loss = criterion(W, W_prediction)
-      loss_hist.append(loss)
-      loss.backward()
-      optimizer.step()
-
-      if np.abs(loss.item() - prev_loss) < stability_threshold:
-        loss_stable_count += 1
-        if loss_stable_count >= 10000:  # Adjust as needed
-            print("Loss has stabilized. Early stopping...")
-            break
-      else:
-        loss_stable_count = 0
-
-      prev_loss = loss.item()
-
-    """
-    #W = (torch.exp(dist.Normal(mu, torch.exp(log_sigma)).log_prob(torch.arange(D, device=device)[:, None, None, ...])).permute(1,2,0)\
-        # * F.softmax(scale, dim=1).unsqueeze(-1).expand(-1, -1, D)).detach()
-    #ll = log_probability(X, a, b, W).detach().cpu()
-    #lps.append(ll)
 
     return b.detach().cpu(), a.detach().cpu(), W.detach().cpu(), lps, scale.detach().cpu(), mu.detach().cpu(), log_sigma.detach().cpu(), loss_hist, W_prediction.detach().cpu()
