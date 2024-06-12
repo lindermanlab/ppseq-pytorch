@@ -75,6 +75,7 @@ def em(X,
        K,
        D,
        n_iter=50,
+       sgd_iter = 1e5,
        alpha_a0 = 0.5, beta_a0 = 0, 
        alpha_b0=0, beta_b0=0
        ):
@@ -161,7 +162,7 @@ def em(X,
     optimizer = optim.Adam([scale, mu, log_sigma], lr=0.01)
     criterion = nn.MSELoss()
 
-    for i in trange(10000):
+    for i in trange(sgd_iter):
         optimizer.zero_grad()
         W_prediction = model(scale, mu, log_sigma)
         loss = criterion(W, W_prediction)
