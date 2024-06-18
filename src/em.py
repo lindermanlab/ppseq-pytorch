@@ -149,7 +149,7 @@ def em(X,
       r_nt = X / (lambda_nt +1e-7)
       beta_knd = torch.sum(a, dim=1)[:,None,None].repeat(1,N,D)
       conv = torch.flip(F.conv1d(a.unsqueeze(1), r_nt.unsqueeze(1),padding=D-1)[:,:,:-D+1], [2])
-      W = (W * conv) / beta_knd.detach()
+      W = (W * conv) / beta_knd
 
 
     # Run EM
