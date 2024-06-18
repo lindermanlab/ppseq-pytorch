@@ -53,6 +53,7 @@ class compute_weight(nn.Module):
     the weight is modeled as scale * Normal(mu, sigma)
     args:
     - D: delay (scalar)
+    - device: device 
     - scale: the log scale, 
     we use a softmax to force the scale sum up to one  (K,N) 
     - mu: the mean delay (K,N)
@@ -60,13 +61,13 @@ class compute_weight(nn.Module):
     returns: 
     - w: weights (K,N,D)
     """
-    def __init__(self, D):
-        super(compute_weight, self).__init__()
+    def __init__(self, D, device):
+        super().__init__()
         self.D = D
+        self.delay = torch.arange(self.D, device=device)
 
     def forward(self, scale, mu, log_sigma):
-        delay = torch.arange(self.D, device=scale.device)
-        return torch.exp(dist.Normal(mu, torch.exp(log_sigma)).log_prob(delay[:, None, None, ...])).permute(1,2,0)\
+        return torch.exp(dist.Normal(mu, torch.exp(log_sigma)).log_prob(self.delay[:, None, None, ...])).permute(1,2,0)\
         * F.softmax(scale, dim=1).unsqueeze(-1).expand(-1, -1, self.D)
 
 def em(X,
@@ -155,11 +156,11 @@ def em(X,
     # Run EM
     for _ in trange(n_iter):
         m_step(X)
-        lps.append(log_probability(X, a, b, W).detach().cpu())
+        lps.append(log_probability(X, a, b, W).detach().cpu().to_numpy())
 
     # initialize SGD 
     loss_hist = []
-    model = compute_weight(D)
+    model = compute_weight(D, device)
     model.to(device)
     optimizer = optim.Adam([scale, mu, log_sigma], lr=0.01)
     criterion = nn.MSELoss()
@@ -168,7 +169,7 @@ def em(X,
         optimizer.zero_grad()
         W_prediction = model(scale, mu, log_sigma)
         loss = criterion(W, W_prediction)
-        loss_hist.append(loss)
+        loss_hist.append(loss.detach().cpu().to_numpy())
         loss.backward()
         optimizer.step()
 
