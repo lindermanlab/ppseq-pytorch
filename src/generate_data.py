@@ -1,23 +1,22 @@
-# Import PyTorch modules
+# This file contains various ways 
+# to generate synthetic data of neural spike trains
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributions as dist
 import torch.optim as optim
 
-# Plotting stuff
 import matplotlib.pyplot as plt
 
-# Some helper utilities
 from tqdm.auto import trange
-# We'll use a few functions from scipy
+
 from scipy.signal import find_peaks
 from scipy.optimize import linear_sum_assignment
 
 def generate_data_v4(N=50, T=1000, K=2, D=5):
   """
   -X: (N, T)
-  more extreme version of v3
   """
   mu = D/2 + (torch.rand(K,N) - 0.5) * D/3
   true_w = torch.exp(dist.Normal(mu, 0.5).log_prob(torch.arange(D).unsqueeze(1).unsqueeze(1))).permute(1,2,0).expand(K,N,D)

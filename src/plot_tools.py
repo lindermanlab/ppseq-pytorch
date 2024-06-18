@@ -2,26 +2,24 @@ import numpy as np
 import pandas as pd
 import math 
 
-# Import PyTorch modules
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributions as dist
 import torch.optim as optim
 
-# Plotting stuff
-import matplotlib.pyplot as plt
-
-# Some helper utilities
 from tqdm.auto import trange
-# Plotting stuff
+
 import matplotlib.pyplot as plt
 from matplotlib.cm import get_cmap
 from matplotlib.gridspec import GridSpec
 import seaborn as sns
 
-#@title plotting
+
 def sort_neurons(X, scale, mu):
+  """
+  Given Neural spike trains X of shape (N,T), return the order (N,) of the neurons
+  """
   N, T, K = X.shape[0], X.shape[1], scale.shape[0]
   A, B  = [], []
   for i in range(N):
@@ -34,27 +32,30 @@ def sort_neurons(X, scale, mu):
   return A + B
 
 def plot_sorted_neurons(data):
+  """
+  given a data matrix of shape (N, T) Neuron * Time plot the neural spike trains
+  """
   plt.figure(figsize=(12, 8))
   plt.scatter(torch.nonzero(data.T)[:,0], torch.nonzero(data.T)[:,1], s=10)
   plt.show()
 
 def color_plot(data, b, a, W, scale, mu):
+  """
+  Plot the neural spike trains and 
+  color the spikes into red, blue and black according to their intensities 
+  """
   order = sort_neurons(data, scale, mu)
-
   N, T = data.shape
-  #order = torch.arange(N)     # use the original order
-  # color_dict = {0: 'black', 1: 'red', 2: 'blue'}
   D = W.shape[2]
   black_nt = b.view(N,1).expand(N, T)
   red_nt =  F.conv1d(a[[0],:], torch.flip(W[[0]].permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
   blue_nt = F.conv1d(a[[1],:], torch.flip(W[[1]].permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
   sum_nt = F.conv1d(a, torch.flip(W.permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
-
   assert torch.allclose(red_nt + blue_nt, sum_nt)
+
   def f(i,j):
     if data[i,j] == 0:
       return -1
-
     large = max(black_nt[i,j], red_nt[i,j], blue_nt[i,j])
     if black_nt[i,j] >= large:
       return 0
@@ -73,8 +74,8 @@ def color_plot(data, b, a, W, scale, mu):
 # Plotting
   plt.figure(figsize=(10, 6))
   plt.scatter(black_indices[:, 0], black_indices[:, 1], c='black', s=4, alpha=0.7)
-  plt.scatter(red_indices[:, 0], red_indices[:, 1], c='red', s=7, alpha=0.7)
-  plt.scatter(blue_indices[:, 0], blue_indices[:, 1], c='blue', s=7, alpha=0.7)
+  plt.scatter(red_indices[:, 0], red_indices[:, 1], c='red', s=4, alpha=0.7)
+  plt.scatter(blue_indices[:, 0], blue_indices[:, 1], c='blue', s=4, alpha=0.7)
   plt.title('')
   plt.xlabel('Time')
   plt.ylabel('channel')

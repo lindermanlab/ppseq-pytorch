@@ -16,15 +16,14 @@ if not torch.cuda.is_available():
 
 def pred(w, a, b):
   """
-  predict mean
-
+  predict mean, i.e. the intensities of each spike
   args:
-  - w,a,b
-
+  - w: weights (K,N,D)
+  - a: amplitutes (K,T)
+  - b: base rate (N,)
   returns:
-  - prediction of E[X]
+  - prediction of E[X], shape (N,T)
   """
-
   K,N,D = w.shape
   lambdas = b.view(N,1) + F.conv1d(a, torch.flip(w.permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
   return lambdas
@@ -33,8 +32,14 @@ def log_probability(X, a, b, W):
   """
   calculate the log probability given data X
   and estimated parameters a, b, W
+  args:
+  - X: spike train data (N,T)
+  - w: weights (K,N,D)
+  - a: amplitutes (K,T)
+  - b: base rate (N,)
+  returns: 
+  - a scalar of the log probability
   """
-
   N, T = X.shape
   K, N, D = W.shape
   lambda_nt = b.view(N,1) + F.conv1d(a, torch.flip(W.permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
@@ -43,6 +48,18 @@ def log_probability(X, a, b, W):
 
 
 class compute_weight(nn.Module):
+    """
+    This module compute the weight w given scale, mu, sigma
+    the weight is modeled as scale * Normal(mu, sigma)
+    args:
+    - D: delay (scalar)
+    - scale: the log scale, 
+    we use a softmax to force the scale sum up to one  (K,N) 
+    - mu: the mean delay (K,N)
+    - sigma: log of std of gaussian (K,N)
+    returns: 
+    - w: weights (K,N,D)
+    """
     def __init__(self, D):
         super(compute_weight, self).__init__()
         self.D = D
@@ -52,31 +69,12 @@ class compute_weight(nn.Module):
         return torch.exp(dist.Normal(mu, torch.exp(log_sigma)).log_prob(delay[:, None, None, ...])).permute(1,2,0)\
         * F.softmax(scale, dim=1).unsqueeze(-1).expand(-1, -1, self.D)
 
-
-def quantile_mean(arr):
-    low = np.quantile(arr, 0.0)
-    high = np.quantile(arr, 0.85)
-    filtered_data = arr[(arr >= low) & (arr <= high)]
-    return np.mean(filtered_data)
-
-
-def estimate_b(X):
-    N, T = X.shape
-    b = np.zeros(N)
-    df = pd.DataFrame(X.cpu().T)
-    averages = df.rolling(window=int(np.sqrt(T))).mean().dropna().to_numpy().T
-    for i in range(N):
-        #b[i] = quantile_mean(averages[i])
-        b[i] = np.median(averages[i])
-    return torch.tensor(b).float().to(device)
-
-
 def em(X,
        K,
        D,
        n_iter=50,
-       sgd_iter = 1e5,
-       alpha_a0 = 0.5, beta_a0 = 0, 
+       sgd_iter=1e5,
+       alpha_a0=0.5, beta_a0=0, 
        alpha_b0=0, beta_b0=0
        ):
     """
@@ -84,48 +82,51 @@ def em(X,
 
     Args:
     - X: (N, T)
-    - K, D: scalar
-    - n_iter: number of iterations of EM.
+    - K: type of actions, scalar
+    - D: delay, scalar
+    - n_iter: number of iterations of EM, scalar
+    - sgd_iter: number of iterations of sgd to fit scale, mu, sigma, scalar
+    - alpha_a0, beta_a0: gamma prior of base rate b, scalar
+    - alpha_b0, beta_b0: gamma prior of amplitudes a, scalar
 
     Returns:
-    - b, a, W
-    - lps: the history of log probabilities
-    - scale, mu, log_sigma
+    - b: base rate (N)
+    - a: amplitudes (K,T)
+    - W: weights based on em_algorithm (K,N,D) 
+    - lps: the history of log probabilities, a list
+    - scale: the log scale, 
+    we use a softmax to force the scale sum up to one  (K,N) 
+    - mu: the mean delay (K,N)
+    - log_sigma: log of std of gaussian (K,N)
+    - loss_history: the loss of sgd iterations of scale mu log_sigma, a list
+    - W_prediction: the predicted weights from scale, mu, log_sigma (K,N,D)
     """
-    X = X.to(device)
     lps = []
+
+    X = X.to(device)
     N, T = X.shape
 
-    # Initialize  parameters
+    # Initialize parameters
     b = torch.rand(N, device=device)
     a = torch.rand(K, T, device=device) + 1e-4
     scale = torch.rand(K, N, requires_grad=True, device=device)
     mu = torch.tensor(torch.ones(K, N) * D/2, requires_grad=True, device=device)
     log_sigma = torch.ones(K, N, requires_grad=True, device=device)
-
-    model = compute_weight(D)
-    model.to(device)
-
     W = (torch.exp(dist.Normal(mu, torch.exp(log_sigma)).log_prob(torch.arange(D, device=device)[:, None, None, ...])).permute(1,2,0)\
    * F.softmax(scale, dim=1).unsqueeze(-1).expand(-1, -1, D)).detach() #(K,N,D)
 
-    b = estimate_b(X)
-
     def m_step(X):
       """
-  Args:
-    - X: (N, T)
-    - b: (N)
-    - a: (K, T)
-    - scale: (K, N) the log_scale that softmax to the true scale of the gaussian pdf
-    - mu: (K, N) mean of the gaussian
-    - log_sigma: (K, N) log of std of gaussian
-      the weight W is determined by (scale, mu, log_sigma)
-    - D: delay
-
-  Returns:
-  updated parameters in the m-step of an EM algorithm:
-  b, a, scale, mu, log_sigma
+      Args:
+      - X: (N,T)
+      - b: (N)
+      - a: (K,T)
+      - W: (K,N,D)
+      - D: delay, scalar
+      - alpha_a0, beta_a0, alpha_b0, beta_b0: prior parameters
+      Returns:
+      updated parameters in the m-step of an EM algorithm:
+      b, a, W
       """
       nonlocal b, a, W, alpha_a0, beta_a0, alpha_b0, beta_b0
 
@@ -134,7 +135,7 @@ def em(X,
 
       # update b
       lambda_nt = b.view(N,1) + F.conv1d(a, torch.flip(W.permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
-      r_nt = X / (lambda_nt +1e-7) # (N, T)
+      r_nt = X / (lambda_nt +1e-7) # add 1e-7 for numerical stability (N, T)
       b = torch.clip((torch.sum(r_nt, dim=1) * b + alpha_b0 - 1) / (T + beta_b0), 0)
 
       # update a
@@ -154,14 +155,15 @@ def em(X,
     # Run EM
     for _ in trange(n_iter):
         m_step(X)
-        ll = log_probability(X, a, b, W).detach().cpu()
-        lps.append(ll)
+        lps.append(log_probability(X, a, b, W).detach().cpu())
 
+    # initialize SGD 
     loss_hist = []
-    
+    model = compute_weight(D)
+    model.to(device)
     optimizer = optim.Adam([scale, mu, log_sigma], lr=0.01)
     criterion = nn.MSELoss()
-
+    # run SGD 
     for i in trange(int(sgd_iter)):
         optimizer.zero_grad()
         W_prediction = model(scale, mu, log_sigma)
@@ -171,3 +173,25 @@ def em(X,
         optimizer.step()
 
     return b.detach().cpu(), a.detach().cpu(), W.detach().cpu(), lps, scale.detach().cpu(), mu.detach().cpu(), log_sigma.detach().cpu(), loss_hist, W_prediction.detach().cpu()
+
+
+"""
+# deprecated functions
+
+def quantile_mean(arr):
+    low = np.quantile(arr, 0.0)
+    high = np.quantile(arr, 0.85)
+    filtered_data = arr[(arr >= low) & (arr <= high)]
+    return np.mean(filtered_data)
+
+
+def estimate_b(X):
+    N, T = X.shape
+    b = np.zeros(N)
+    df = pd.DataFrame(X.cpu().T)
+    averages = df.rolling(window=int(np.sqrt(T))).mean().dropna().to_numpy().T
+    for i in range(N):
+        #b[i] = quantile_mean(averages[i])
+        b[i] = np.median(averages[i])
+    return torch.tensor(b).float().to(device) 
+"""
