@@ -156,7 +156,7 @@ def em(X,
     # Run EM
     for _ in trange(n_iter):
         m_step(X)
-        lps.append(log_probability(X, a, b, W).detach().cpu().to_numpy())
+        lps.append(log_probability(X, a, b, W).detach().cpu().numpy())
 
     # initialize SGD 
     loss_hist = []
@@ -169,7 +169,7 @@ def em(X,
         optimizer.zero_grad()
         W_prediction = model(scale, mu, log_sigma)
         loss = criterion(W, W_prediction)
-        loss_hist.append(loss.detach().cpu().to_numpy())
+        loss_hist.append(loss.detach().cpu().numpy())
         loss.backward()
         optimizer.step()
 
