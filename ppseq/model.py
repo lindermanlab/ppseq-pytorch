@@ -2,14 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributions as dist
-import torch.optim as optim
 
-from jaxtyping import Array, Float
-
-
-# device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-# if not torch.cuda.is_available():
-#     print('cpu')
+from fastprogress import progress_bar
+from torch import Tensor
+from jaxtyping import Float
 
 
 class PPSeq:
@@ -18,61 +14,62 @@ class PPSeq:
     latent variable model, akin to a non-negative, convolutional matrix
     factorization. 
     """
-    # templates : Float[Array, "num_templates num_neurons seq_duration"]
-    base_rates : Float[Array, "num_neurons"]
-    _template_scales_unc: Float[Array, "num_templates num_neurons"]
-    template_delays: Float[Array, "num_templates num_neurons"]
-    _template_widths_unc: Float[Array, "num_templates num_neurons"]
+    base_rates : Float[Tensor, "num_neurons"]
+    template_scales: Float[Tensor, "num_templates num_neurons"]
+    template_offsets: Float[Tensor, "num_templates num_neurons"]
+    template_widths: Float[Tensor, "num_templates num_neurons"]
 
     def __init__(self,
                  num_templates: int,
                  num_neurons: int,
                  template_duration: int,
-                 initial_base_rates: Float[Array, "num_neurons"]=None,
-                 initial_template_scales: Float[Array, "num_templates num_neurons"] = None,
-                 initial_template_delays: Float[Array, "num_templates num_neurons"] = None,
-                 initial_template_widths: Float[Array, "num_templates num_neurons"] = None,
+                 initial_base_rates: Float[Tensor, "num_neurons"]=None,
+                 initial_template_scales: Float[Tensor, "num_templates num_neurons"] = None,
+                 initial_template_delays: Float[Tensor, "num_templates num_neurons"] = None,
+                 initial_template_widths: Float[Tensor, "num_templates num_neurons"] = None,
                  alpha_a0: float=0.5, 
                  beta_a0: float=0., 
                  alpha_b0: float=0., 
-                 beta_b0: float=0.
+                 beta_b0: float=0.,
+                 device=None
                  ):
         self.num_templates = num_templates
         self.num_neurons = num_neurons
         self.template_duration = template_duration
-
-        # TODO: Initialize templates and base rates
-        # scale = torch.rand(K, N, requires_grad=True, device=device)
-        # mu = torch.tensor(torch.ones(K, N) * D/2, requires_grad=True, device=device)
-        # log_sigma = torch.ones(K, N, requires_grad=True, device=device)
+        
+        # Set the device
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            if not torch.cuda.is_available():
+                print('Could not find a GPU. Defaulting to CPU instead.')
+        self.device = device
+    
+        # TODO: Initialize parameters with values if not None
+        self.base_rates = torch.ones(num_neurons, device=device)
+        self.template_scales = torch.ones(num_templates, num_neurons, device=device) / num_neurons
+        self.template_offsets = template_duration * torch.rand(num_templates, num_neurons, device=device)
+        self.template_widths = torch.ones(self.num_templates, self.num_neurons, device=device)
 
         # Set prior hyperparameters
         self.alpha_a0 = alpha_a0
         self.beta_a0 = beta_a0
         self.alpha_b0 = alpha_b0
         self.beta_b0 = beta_b0
-    
-    @property
-    def template_scales(self) -> Float[Array, "num_templates num_neurons"]:
-        return F.softmax(self._template_scales_unc, axis=1)
-    
-    @property
-    def template_widths(self) -> Float[Array, "num_templates num_neurons"]:
-        return F.softplus(self._template_widths_unc)
 
     @property
-    def templates(self) -> Float[Array, "num_templates num_neurons duration"]:
+    def templates(self) -> Float[Tensor, "num_templates num_neurons duration"]:
         """Compute the templates from the mean, std, and amplitude of the Gaussian kernel.
         """
-        ds = torch.arange(self.template_duration, device=self.device)[:, None, None]
-        p = dist.Normal(self.template_delays, self.template_widths)
-        W = p.log_prob(ds).exp().permute(1,2,0)
-        W *= self.template_scales[:, :, None]
-        return W
-
+        D = self.template_duration
+        amp, mu, sigma = self.template_scales, self.template_offsets, self.template_widths
+        ds = torch.arange(D, device=self.device)[:, None, None]
+        p = dist.Normal(mu, sigma)
+        W = p.log_prob(ds).exp().permute(1,2,0) 
+        return W / W.sum(dim=2, keepdim=True) * amp[:, :, None]
+        
     def reconstruct(self,
-                    amplitudes: Float[Array, "num_templates num_timesteps"]) \
-                    -> Float[Array, "num_neurons num_timesteps"]: 
+                    amplitudes: Float[Tensor, "num_templates num_timesteps"]) \
+                    -> Float[Tensor, "num_neurons num_timesteps"]: 
         """
         Reconstruct the firing rate given the model parameters and latent variables.
 
@@ -84,9 +81,9 @@ class PPSeq:
         kernel = torch.flip(self.templates.permute(1,0,2), [2])
         return self.base_rates[:, None] + F.conv1d(amplitudes, kernel, padding=D-1)[:,:-D+1]
         
-    def log_probability(self,
-                        data: Float[Array, "num_neurons num_timesteps"], 
-                        amplitudes: Float[Array, "num_templates num_timesteps"]) -> float:
+    def log_likelihood(self,
+                       data: Float[Tensor, "num_neurons num_timesteps"], 
+                       amplitudes: Float[Tensor, "num_templates num_timesteps"]) -> float:
         """
         Calculate the log probability given data X
         and estimated parameters a, b, W
@@ -106,17 +103,6 @@ class PPSeq:
         rates = torch.clamp(rates, min=1e-7)
         return torch.sum(dist.Poisson(rates).log_prob(data))
     
-    def _update_base_rates(self, data, amplitudes):
-        D, T = self.template_duration, data.shape[1]
-        b, W = self.base_rates, self.templates
-        kernel = torch.flip(W.permute(1,0,2),[2])
-        rates = b[:, None] + F.conv1d(amplitudes, kernel, padding=D-1)[:,:-D+1]
-        ratio = data / (rates + 1e-7)
-
-        alpha_post = torch.sum(ratio, dim=1) * b + self.alpha_b0
-        beta_post = T + self.beta_b0
-        self.base_rates = torch.clip((alpha_post - 1) / beta_post, 0)
-    
     def _update_amplitudes(self, data, amplitudes):
         D, T = self.template_duration, data.shape[1]
         b, W = self.base_rates, self.templates
@@ -127,12 +113,21 @@ class PPSeq:
         alpha_post = amplitudes * F.conv1d(ratio, W, padding=D-1)[:,D-1:] + self.alpha_a0
         beta_post = torch.sum(W, dim=(1,2)).unsqueeze(1).repeat(1,T) + self.beta_a0
         return torch.clip((alpha_post - 1) / beta_post, 0)
+    
+    def _update_base_rates(self, data, amplitudes):
+        D, T = self.template_duration, data.shape[1]
+        b, W = self.base_rates, self.templates
+        kernel = torch.flip(W.permute(1,0,2),[2])
+        rates = b[:, None] + F.conv1d(amplitudes, kernel, padding=D-1)[:,:-D+1]
+        ratio = data / (rates + 1e-7)
+
+        alpha_post = torch.sum(ratio, dim=1) * b + self.alpha_b0
+        beta_post = T + self.beta_b0
+        self.base_rates = torch.clip((alpha_post - 1) / beta_post, 0)
         
     def _update_templates(self, 
                           data, 
-                          amplitudes,
-                          num_sgd_iter=100,
-                          lr=0.01):
+                          amplitudes):
         D = self.template_duration
         b, W = self.base_rates, self.templates
         kernel = torch.flip(W.permute(1,0,2), [2])
@@ -146,65 +141,77 @@ class PPSeq:
         beta_post = torch.sum(amplitudes, dim=1)[:,None,None]
         
         # Note: setting target to conditional mean rather than mode?
-        targets = alpha_post / beta_post   
+        targets = (alpha_post + 1e-4) / (beta_post + 1e-4) # (K, N, D)
+        norm_targets = targets / targets.sum(dim=2, keepdim=True)
 
-        # initialize SGD 
-        loss_hist = []
-        optimizer = optim.Adam([self._template_scales_unc, 
-                                self.template_delays, 
-                                self._template_widths_unc], 
-                                lr=lr)
-        
-        # run SGD 
-        for _ in range(int(num_sgd_iter)):
-            optimizer.zero_grad()
-            loss = nn.MSELoss(self.templates, targets)
-            loss_hist.append(loss.detach().cpu().numpy())
-            loss.backward()
-            optimizer.step()
+        # Estimate the Gaussian template parameters by matching moments
+        ds = torch.arange(self.template_duration, device=self.device)
+        scales = targets.sum(dim=2)
+        delays = torch.sum(ds * norm_targets, dim=2)
+        widths = torch.sqrt(torch.sum((ds - delays[:, :, None])**2 * norm_targets, dim=2)) + 1e-4
+        assert torch.all(torch.isfinite(scales))
+        assert torch.all(torch.isfinite(delays))
+        assert torch.all(torch.isfinite(widths))
 
+        # Make the model identifiable by constraining the scales to sum to one across neurons
+        scales /= scales.sum(axis=1, keepdim=True)
+        self.template_scales = scales
+        self.template_offsets = delays
+        self.template_widths = widths
+
+    def initialize_random(self, 
+                          data: Float[Tensor, "num_neurons num_timesteps"],
+                          sequence_frac: float=0.5,
+                          concentration: float=10.) \
+                          -> None:
+        """Initialize the model parameters randomly, while matching gross 
+        statistics of the data.
+
+        Parameters
+        ----------
+        data: neurons x time array of spike counts
+        sequence_frac: what fraction of spikes are due to sequences rather than background
+        """
+        K, N, D = self.num_templates, self.num_neurons, self.template_duration
+        T = data.shape[1]
+        avg_rate = data.mean(dim=1)
+        self.base_rates = avg_rate * (1 - sequence_frac)
+        # self.template_scales = torch.ones(K, N, device=self.device) / N
+        self.template_scales = dist.Dirichlet(concentration * avg_rate).sample(sample_shape=(K,))
+        self.template_offsets = D * torch.rand(K, N, device=self.device)
+        self.template_widths = torch.ones(K, N, device=self.device)
+
+        # expected num spikes = .8 * total num spikes
+        # unit amplitude produces 1 spike in expectation
+        # need amplitudes.sum() = .2 * total num spikes
+        amplitudes = dist.Dirichlet(0.1 * torch.ones(K, T, device=self.device)).sample()
+        amplitudes *= sequence_frac * data.sum() / K
+        return amplitudes
+    
     def fit(self,
-            data: Float[Array, "num_neurons num_timesteps"],
+            data: Float[Tensor, "num_neurons num_timesteps"],
             num_iter: int=50,
-            num_inner_sgd_iter=100,
-            sgd_learning_rate=0.01
+            initialization="random",
             ):
         """
         Fit the model with expectation-maximization (EM).
-
-        Args:
-        - X: (N, T)
-        - K: type of actions, scalar
-        - D: delay, scalar
-        - n_iter: number of iterations of EM, scalar
-        - sgd_iter: number of iterations of sgd to fit scale, mu, sigma, scalar
-        - alpha_a0, beta_a0: gamma prior of base rate b, scalar
-        - alpha_b0, beta_b0: gamma prior of amplitudes a, scalar
-
-        Returns:
-        - b: base rate (N)
-        - a: amplitudes (K,T)
-        - W: weights based on em_algorithm (K,N,D) 
-        - lps: the history of log probabilities, a list
-        - scale: the log scale, 
-        we use a softmax to force the scale sum up to one  (K,N) 
-        - mu: the mean delay (K,N)
-        - log_sigma: log of std of gaussian (K,N)
-        - loss_history: the loss of sgd iterations of scale mu log_sigma, a list
-        - W_prediction: the predicted weights from scale, mu, log_sigma (K,N,D)
         """
         K = self.num_templates
         T = data.shape[1]
-        lps = []
+
+        init_method = dict(random=self.initialize_random)[initialization.lower()]
+        amplitudes = init_method(data)
 
         # TODO: Initialize amplitudes more intelligently?
-        amplitudes = torch.rand(K, T, device=self.device) + 1e-4
+        # amplitudes = torch.rand(K, T, device=self.device) + 1e-4
         
         # Run EM
-        for _ in range(num_iter):
+        lps = []
+        for _ in progress_bar(range(num_iter)):
             amplitudes = self._update_amplitudes(data, amplitudes)
             self._update_base_rates(data, amplitudes)
-            self._update_templates(data, amplitudes, num_sgd_iter=num_inner_sgd_iter, lr=sgd_learning_rate)
-            lps.append(self.log_probability(data, amplitudes))
+            self._update_templates(data, amplitudes)
+            lps.append(self.log_likelihood(data, amplitudes))
 
-        return torch.stack(lps), amplitudes
+        lps = torch.stack(lps) if num_iter > 0 else torch.tensor([])
+        return lps, amplitudes

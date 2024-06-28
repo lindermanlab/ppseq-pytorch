@@ -9,70 +9,77 @@ import seaborn as sns
 
 
 def sort_neurons(X, scale, mu):
-  """
-  Given Neural spike trains X of shape (N,T), return the order (N,) of the neurons
-  """
-  N, T, K = X.shape[0], X.shape[1], scale.shape[0]
-  A, B  = [], []
-  for i in range(N):
-    if scale[0][i] > scale[1][i]:
-      A.append(i)
-    else:
-      B.append(i)
-  A.sort(key = lambda x: mu[0][x])
-  B.sort(key = lambda x: mu[1][x])
-  return A + B
+    """
+    Given Neural spike trains X of shape (N,T), return the order (N,) of the neurons
+    """
+    N, T, K = X.shape[0], X.shape[1], scale.shape[0]
+    A, B = [], []
+    for i in range(N):
+        if scale[0][i] > scale[1][i]:
+            A.append(i)
+        else:
+            B.append(i)
+    A.sort(key=lambda x: mu[0][x])
+    B.sort(key=lambda x: mu[1][x])
+    return A + B
+
 
 def plot_sorted_neurons(data):
-  """
-  given a data matrix of shape (N, T) Neuron * Time plot the neural spike trains
-  """
-  plt.figure(figsize=(12, 8))
-  plt.scatter(torch.nonzero(data.T)[:,0], torch.nonzero(data.T)[:,1], s=10)
-  plt.show()
+    """
+    given a data matrix of shape (N, T) Neuron * Time plot the neural spike trains
+    """
+    plt.figure(figsize=(12, 8))
+    plt.scatter(torch.nonzero(data.T)[:, 0], torch.nonzero(data.T)[:, 1], s=10)
+    plt.show()
+
 
 def color_plot(data, b, a, W, scale, mu):
-  """
-  Plot the neural spike trains and 
-  color the spikes into red, blue and black according to their intensities 
-  """
-  order = sort_neurons(data, scale, mu)
-  N, T = data.shape
-  D = W.shape[2]
-  black_nt = b.view(N,1).expand(N, T)
-  red_nt =  F.conv1d(a[[0],:], torch.flip(W[[0]].permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
-  blue_nt = F.conv1d(a[[1],:], torch.flip(W[[1]].permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
-  sum_nt = F.conv1d(a, torch.flip(W.permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
-  assert torch.allclose(red_nt + blue_nt, sum_nt)
+    """
+    Plot the neural spike trains and 
+    color the spikes into red, blue and black according to their intensities 
+    """
+    order = sort_neurons(data, scale, mu)
+    N, T = data.shape
+    D = W.shape[2]
+    black_nt = b.view(N, 1).expand(N, T)
+    red_nt = F.conv1d(a[[0], :], torch.flip(
+        W[[0]].permute(1, 0, 2), [2]), padding=D-1)[:, :-D+1]
+    blue_nt = F.conv1d(a[[1], :], torch.flip(
+        W[[1]].permute(1, 0, 2), [2]), padding=D-1)[:, :-D+1]
+    sum_nt = F.conv1d(a, torch.flip(
+        W.permute(1, 0, 2), [2]), padding=D-1)[:, :-D+1]
+    assert torch.allclose(red_nt + blue_nt, sum_nt)
 
-  def f(i,j):
-    if data[i,j] == 0:
-      return -1
-    large = max(black_nt[i,j], red_nt[i,j], blue_nt[i,j])
-    if black_nt[i,j] >= large:
-      return 0
-    if red_nt[i,j] == max(red_nt[i,j], blue_nt[i,j]):
-      return 1
-    return 2
+    def f(i, j):
+        if data[i, j] == 0:
+            return -1
+        large = max(black_nt[i, j], red_nt[i, j], blue_nt[i, j])
+        if black_nt[i, j] >= large:
+            return 0
+        if red_nt[i, j] == max(red_nt[i, j], blue_nt[i, j]):
+            return 1
+        return 2
 
-  colors = np.array([[f(i, j) for i in range(N)] for j in range(T)])
-  colors = colors[:,order]
-  black_indices = np.argwhere(colors == 0)
-  red_indices = np.argwhere(colors == 1)
-  blue_indices = np.argwhere(colors == 2)
+    colors = np.array([[f(i, j) for i in range(N)] for j in range(T)])
+    colors = colors[:, order]
+    black_indices = np.argwhere(colors == 0)
+    red_indices = np.argwhere(colors == 1)
+    blue_indices = np.argwhere(colors == 2)
 
-  sizes = 10  # Adjust size based on matrix values
+    sizes = 10  # Adjust size based on matrix values
 
-# Plotting
-  plt.figure(figsize=(10, 6))
-  plt.scatter(black_indices[:, 0], black_indices[:, 1], c='black', s=4, alpha=0.7)
-  plt.scatter(red_indices[:, 0], red_indices[:, 1], c='red', s=4, alpha=0.7)
-  plt.scatter(blue_indices[:, 0], blue_indices[:, 1], c='blue', s=4, alpha=0.7)
-  plt.title('')
-  plt.xlabel('Time')
-  plt.ylabel('channel')
-  plt.grid(True)
-  plt.show()
+    # Plotting
+    plt.figure(figsize=(10, 6))
+    plt.scatter(black_indices[:, 0],
+                black_indices[:, 1], c='black', s=4, alpha=0.7)
+    plt.scatter(red_indices[:, 0], red_indices[:, 1], c='red', s=4, alpha=0.7)
+    plt.scatter(blue_indices[:, 0], blue_indices[:, 1],
+                c='blue', s=4, alpha=0.7)
+    plt.title('')
+    plt.xlabel('Time')
+    plt.ylabel('channel')
+    plt.grid(True)
+    plt.show()
 
 
 palette = sns.xkcd_palette(["windows blue",
@@ -85,6 +92,7 @@ palette = sns.xkcd_palette(["windows blue",
                             "pink",
                             "greyish"])
 sns.set_context("notebook")
+
 
 def plot_templates(templates,
                    indices,
@@ -103,7 +111,8 @@ def plot_templates(templates,
 
     if fig is None and axs is None:
         fig, axs = plt.subplots(n_rows, n_cols,
-                                figsize=(panel_width * n_cols, panel_height * n_rows),
+                                figsize=(panel_width * n_cols,
+                                         panel_height * n_rows),
                                 sharex=True, sharey=True)
 
     n_units, n_channels, spike_width = templates.shape
@@ -137,7 +146,8 @@ def plot_templates(templates,
 
     return fig, axs
 
-def plot_model(templates, amplitude, data, scores=None, lw=2, figsize=(12, 6)):
+
+def plot_model(templates, amplitude, data, scores=None, lw=2, figsize=(12, 6), spc=0.1):
     """Plot the raw data as well as the underlying signal amplitudes and templates.
 
     amplitude: (K,T) array of underlying signal amplitude
@@ -158,10 +168,11 @@ def plot_model(templates, amplitude, data, scores=None, lw=2, figsize=(12, 6)):
 
     # Set up figure with 2x2 grid of panels
     fig = plt.figure(figsize=figsize)
-    gs = GridSpec(2, K + 1, height_ratios=[1, 2], width_ratios=[1] * K + [2 * K])
+    gs = GridSpec(
+        2, K + 1, height_ratios=[1, 2], width_ratios=[1] * K + [2 * K])
 
     # plot the templates
-    t_spc = 1.05 * abs(templates).max()
+    t_spc = spc * abs(templates).max()
     for n in range(K):
         ax = fig.add_subplot(gs[1, n])
         ax.plot(dt, templates[n].T - t_spc * torch.arange(N),
@@ -182,11 +193,12 @@ def plot_model(templates, amplitude, data, scores=None, lw=2, figsize=(12, 6)):
         a_spc = max(a_spc, 1.05 * abs(scores).max())
 
     for n in range(K):
-        ax.plot(amplitude[n] - a_spc * n, '-', color=palette[n % len(palette)], lw=lw)
+        ax.plot(amplitude[n] - a_spc * n, '-',
+                color=palette[n % len(palette)], lw=lw)
 
         if scores is not None:
             ax.plot(scores[n] - a_spc * n, ':', color=palette[n % len(palette)], lw=lw,
-                label="$X \star W$")
+                    label="$X \star W$")
 
     ax.set_xlim([0, T])
     ax.set_xticklabels([])
