@@ -23,10 +23,6 @@ class PPSeq:
                  num_templates: int,
                  num_neurons: int,
                  template_duration: int,
-                 initial_base_rates: Float[Tensor, "num_neurons"]=None,
-                 initial_template_scales: Float[Tensor, "num_templates num_neurons"] = None,
-                 initial_template_delays: Float[Tensor, "num_templates num_neurons"] = None,
-                 initial_template_widths: Float[Tensor, "num_templates num_neurons"] = None,
                  alpha_a0: float=0.5, 
                  beta_a0: float=0., 
                  alpha_b0: float=0., 
@@ -176,7 +172,6 @@ class PPSeq:
         T = data.shape[1]
         avg_rate = data.mean(dim=1)
         self.base_rates = avg_rate * (1 - sequence_frac)
-        # self.template_scales = torch.ones(K, N, device=self.device) / N
         self.template_scales = dist.Dirichlet(concentration * avg_rate).sample(sample_shape=(K,))
         self.template_offsets = D * torch.rand(K, N, device=self.device)
         self.template_widths = torch.ones(K, N, device=self.device)
