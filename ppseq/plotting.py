@@ -70,12 +70,17 @@ named_colors = [
     'plum'
 ]
 
-def color_plot(data, b, a, W, scale, mu):
+def color_plot(data, model, amplitudes):
     """
     Plot the neural spike trains and 
     color the spikes into red, blue and black according to their intensities
     supports at most 30 colors 
     """
+    b, W, scale, mu = model.base_rates.cpu(),
+           model.templates.cpu(),
+           model.template_scales.cpu(),
+           model.template_offsets.cpu()
+    a = amplitudes
     order = sort_neurons(data, scale, mu)
     N, T, K = data.shape[0], data.shape[1], scale.shape[0]
     D = W.shape[2]
