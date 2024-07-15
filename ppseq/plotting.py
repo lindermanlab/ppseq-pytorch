@@ -110,11 +110,11 @@ def color_plot(data, b, a, W, scale, mu):
     #black_indices = np.argwhere(colors == 0)
     #red_indices = np.argwhere(colors == 1)
     #blue_indices = np.argwhere(colors == 2)
-    color_indices = [np.argwhere(colors == i) for i in range(K)]
+    color_indices = [np.argwhere(colors == i) for i in range(K+1)]
     
     # Plotting
     plt.figure(figsize=(10, 6))
-    for i in range(K):
+    for i in range(K+1):
         plt.scatter(color_indices[i][:, 0],
             color_indices[i][:, 1], c=named_colors[i], s=4, alpha=0.7)
     #plt.scatter(black_indices[:, 0],
