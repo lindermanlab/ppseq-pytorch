@@ -37,24 +37,59 @@ def plot_sorted_neurons(data):
     plt.scatter(torch.nonzero(data.T)[:, 0], torch.nonzero(data.T)[:, 1], s=10)
     plt.show()
 
+named_colors = [
+    'black',
+    'red',
+    'blue',
+    'green',
+    'cyan',
+    'magenta',
+    'yellow',
+    'white',
+    'orange',
+    'purple',
+    'brown',
+    'pink',
+    'gray',
+    'olive',
+    'navy',
+    'gold',
+    'silver',
+    'maroon',
+    'lime',
+    'teal',
+    'aqua',
+    'fuchsia',
+    'indigo',
+    'violet',
+    'coral',
+    'turquoise',
+    'tan',
+    'chocolate',
+    'salmon',
+    'plum'
+]
 
 def color_plot(data, b, a, W, scale, mu):
     """
     Plot the neural spike trains and 
-    color the spikes into red, blue and black according to their intensities 
+    color the spikes into red, blue and black according to their intensities
+    supports at most 30 colors 
     """
     order = sort_neurons(data, scale, mu)
-    N, T = data.shape
+    N, T, K = data.shape[0], data.shape[1], scale.shape[0]
     D = W.shape[2]
     black_nt = b.view(N, 1).expand(N, T)
-    red_nt = F.conv1d(a[[0], :], torch.flip(
-        W[[0]].permute(1, 0, 2), [2]), padding=D-1)[:, :-D+1]
-    blue_nt = F.conv1d(a[[1], :], torch.flip(
-        W[[1]].permute(1, 0, 2), [2]), padding=D-1)[:, :-D+1]
-    sum_nt = F.conv1d(a, torch.flip(
-        W.permute(1, 0, 2), [2]), padding=D-1)[:, :-D+1]
-    assert torch.allclose(red_nt + blue_nt, sum_nt)
-
+    #red_nt = F.conv1d(a[[0], :], torch.flip(
+    #    W[[0]].permute(1, 0, 2), [2]), padding=D-1)[:, :-D+1]
+   # blue_nt = F.conv1d(a[[1], :], torch.flip(
+     #   W[[1]].permute(1, 0, 2), [2]), padding=D-1)[:, :-D+1]
+    #sum_nt = F.conv1d(a, torch.flip(
+       # W.permute(1, 0, 2), [2]), padding=D-1)[:, :-D+1]
+    #assert torch.allclose(red_nt + blue_nt, sum_nt)
+    matrices = np.array([black_nt] + [F.conv1d(a[[i], :], torch.flip(
+       W[[i]].permute(1, 0, 2), [2]), padding=D-1)[:, :-D+1] for i in range(K)])
+    
     def f(i, j):
         if data[i, j] == 0:
             return -1
@@ -65,21 +100,28 @@ def color_plot(data, b, a, W, scale, mu):
             return 1
         return 2
 
+    def f(i,j):
+        if data[i, j] == 0:
+            return -1
+        else:
+            return np.argmax(matrices[:,i,j])
     colors = np.array([[f(i, j) for i in range(N)] for j in range(T)])
     colors = colors[:, order]
-    black_indices = np.argwhere(colors == 0)
-    red_indices = np.argwhere(colors == 1)
-    blue_indices = np.argwhere(colors == 2)
-
-    sizes = 10  # Adjust size based on matrix values
-
+    #black_indices = np.argwhere(colors == 0)
+    #red_indices = np.argwhere(colors == 1)
+    #blue_indices = np.argwhere(colors == 2)
+    color_indices = [np.argwhere(colors == i) for i in range(K)]
+    
     # Plotting
     plt.figure(figsize=(10, 6))
-    plt.scatter(black_indices[:, 0],
-                black_indices[:, 1], c='black', s=4, alpha=0.7)
-    plt.scatter(red_indices[:, 0], red_indices[:, 1], c='red', s=4, alpha=0.7)
-    plt.scatter(blue_indices[:, 0], blue_indices[:, 1],
-                c='blue', s=4, alpha=0.7)
+    for i in range(K):
+        plt.scatter(color_indices[i][:, 0],
+            color_indices[i][:, 1], c=named_colors[i], s=4, alpha=0.7)
+    #plt.scatter(black_indices[:, 0],
+    #        black_indices[:, 1], c='black', s=4, alpha=0.7)
+    #plt.scatter(red_indices[:, 0], red_indices[:, 1], c='red', s=4, alpha=0.7)
+    #plt.scatter(blue_indices[:, 0], blue_indices[:, 1],
+    #            c='blue', s=4, alpha=0.7)
     plt.title('')
     plt.xlabel('Time')
     plt.ylabel('channel')
