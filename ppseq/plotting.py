@@ -13,15 +13,20 @@ def sort_neurons(X, scale, mu):
     Given Neural spike trains X of shape (N,T), return the order (N,) of the neurons
     """
     N, T, K = X.shape[0], X.shape[1], scale.shape[0]
-    A, B = [], []
+    color_list = [[] for _ in range(K)]
+    #A, B = [], []
     for i in range(N):
-        if scale[0][i] > scale[1][i]:
-            A.append(i)
-        else:
-            B.append(i)
-    A.sort(key=lambda x: mu[0][x])
-    B.sort(key=lambda x: mu[1][x])
-    return A + B
+        color_list[int(np.argmax(scale[:,i]))].append(i)
+        #if scale[0][i] > scale[1][i]:
+        #    A.append(i)
+        #else:
+        #    B.append(i)
+    #A.sort(key=lambda x: mu[0][x])
+    #B.sort(key=lambda x: mu[1][x])
+    color_list = [sorted(color_list[k], key=lambda x: mu[k][x]) 
+    for k in range(len(color_list))]
+    #return A + B
+    return [x  for l in color_list for x in l]
 
 
 def plot_sorted_neurons(data):
