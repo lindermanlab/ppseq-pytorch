@@ -142,8 +142,8 @@ class PPSeq:
 
         # Estimate the Gaussian template parameters by matching moments
         ds = torch.arange(self.template_duration, device=self.device)
-        scales = targets.sum(dim=2)
-        delays = torch.sum(ds * norm_targets, dim=2)
+        scales = targets.sum(dim=2) # (K,N)
+        delays = torch.sum(ds * norm_targets, dim=2) # (K,N)
         widths = torch.sqrt(torch.sum((ds - delays[:, :, None])**2 * norm_targets, dim=2)) + 1e-4
         assert torch.all(torch.isfinite(scales))
         assert torch.all(torch.isfinite(delays))
