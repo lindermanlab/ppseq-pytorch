@@ -1,4 +1,4 @@
-from .model import PPSeq
+from model import PPSeq
 
 class batchPPseq(PPSeq):
     def __init__(self,
