@@ -103,8 +103,8 @@ class PPSeq:
         if rows is None or cols is None:
             return torch.sum(dist.Poisson(rates).log_prob(data))
 
-        data_selected = data[rows, cols]
-        rates_selected = rates[rows, cols]
+        data_selected = data[rows,:][:,cols]
+        rates_selected = rates[rows,:][:,cols]
         poisson_dist = dist.Poisson(rates_selected)
         log_probs = poisson_dist.log_prob(data_selected)
         log_likelihood = torch.sum(log_probs)
