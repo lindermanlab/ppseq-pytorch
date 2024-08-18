@@ -191,14 +191,47 @@ class PPSeq:
         # expected num spikes = .8 * total num spikes
         # unit amplitude produces 1 spike in expectation
         # need amplitudes.sum() = .2 * total num spikes
-        amplitudes = dist.Dirichlet(0.1 * torch.ones(K, T, device=self.device)).sample()
+        amplitudes = dist.Dirichlet(0.1 * torch.ones(K, T, device=self.device)
+        ).sample()
+        amplitudes *= sequence_frac * data.sum() / K
+        return amplitudes
+
+    def initialize_default(self, 
+                          data: Float[Tensor, "num_neurons num_timesteps"],
+                          sequence_frac: float=0.5,
+                          concentration: float=10.) \
+                          -> None:
+        """Initialize the model parameters randomly, while matching gross 
+        statistics of the data.
+
+        Parameters
+        ----------
+        data: neurons x time array of spike counts
+        sequence_frac: what fraction of spikes are due to sequences rather than background
+        """
+        K, N, D = self.num_templates, self.num_neurons, self.template_duration
+        T = data.shape[1]
+        avg_rate = data.mean(dim=1)
+        self.base_rates = avg_rate * (1 - sequence_frac)
+        self.template_scales = dist.Dirichlet(concentration * 
+        avg_rate).sample(sample_shape=(K,))
+        self.template_offsets = D * torch.rand(K, N, device=self.device)
+        self.template_widths = torch.ones(K, N, device=self.device)
+
+        # expected num spikes = .8 * total num spikes
+        # unit amplitude produces 1 spike in expectation
+        # need amplitudes.sum() = .2 * total num spikes
+        amplitudes = torch.clamp(data.sum(dim=0) + torch.normal(
+            mean=sequence_frac * data.sum() / K,
+            std=data.std(), size=(K, T)), min=1e-7)
+        amplitudes /= amplitudes.sum()
         amplitudes *= sequence_frac * data.sum() / K
         return amplitudes
     
     def fit(self,
             data: Float[Tensor, "num_neurons num_timesteps"],
             num_iter: int=50,
-            initialization="random",
+            initialization='default',
             ):
         """
         Fit the model with expectation-maximization (EM).
@@ -206,7 +239,10 @@ class PPSeq:
         K = self.num_templates
         T = data.shape[1]
 
-        init_method = dict(random=self.initialize_random)[initialization.lower()]
+        init_method = dict(
+            random=self.initialize_random,
+            default=self.initialize_default,
+            )[initialization.lower()]
         amplitudes = init_method(data)
 
         # TODO: Initialize amplitudes more intelligently?
