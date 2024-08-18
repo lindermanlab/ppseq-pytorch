@@ -79,7 +79,9 @@ class PPSeq:
         
     def log_likelihood(self,
                        data: Float[Tensor, "num_neurons num_timesteps"], 
-                       amplitudes: Float[Tensor, "num_templates num_timesteps"]) -> float:
+                       amplitudes: Float[Tensor, "num_templates num_timesteps"],
+                       rows = None,
+                       cols = None) -> float:
         """
         Calculate the log probability given data X
         and estimated parameters a, b, W
@@ -88,6 +90,7 @@ class PPSeq:
         ----------
         data: spike count matrix
         amplitudes: amplitudes of each template over time
+        rows,cols: torch.tensor([list of row/col indices]) that represent a subset of rows * cols where the log likelihood is calculated
         
         Returns
         -------
@@ -97,7 +100,16 @@ class PPSeq:
         kernel = torch.flip(self.templates.permute(1,0,2),[2])
         rates = self.base_rates[:, None] + F.conv1d(amplitudes, kernel, padding=D-1)[:,:-D+1]
         rates = torch.clamp(rates, min=1e-7)
-        return torch.sum(dist.Poisson(rates).log_prob(data))
+        if rows is None or cols is None:
+            return torch.sum(dist.Poisson(rates).log_prob(data))
+
+        data_selected = data[rows, cols]
+        rates_selected = rates[rows, cols]
+        poisson_dist = dist.Poisson(rates_selected)
+        log_probs = poisson_dist.log_prob(data_selected)
+        log_likelihood = torch.sum(log_probs)
+        return log_likelihood
+        
     
     def _update_amplitudes(self, data, amplitudes):
         D, T = self.template_duration, data.shape[1]
