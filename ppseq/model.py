@@ -221,12 +221,13 @@ class PPSeq:
         # expected num spikes = .8 * total num spikes
         # unit amplitude produces 1 spike in expectation
         # need amplitudes.sum() = .2 * total num spikes
+        data = data.to(self.device)
         amplitudes = torch.clamp(data.sum(dim=0) + torch.normal(
             mean=sequence_frac * data.sum() / K,
-            std=data.std(), size=(K, T)), min=1e-7)
+            std=data.std(), size=(K, T)), min=1e-7).to(self.device)
         amplitudes /= amplitudes.sum()
         amplitudes *= sequence_frac * data.sum() / K
-        return amplitudes
+        return amplitudes.to(self.device)
     
     def fit(self,
             data: Float[Tensor, "num_neurons num_timesteps"],
