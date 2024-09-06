@@ -1,3 +1,5 @@
+# we do not force the template to have that structure
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,7 +10,7 @@ from torch import Tensor
 from jaxtyping import Float
 
 
-class PPSeq:
+class PPSeq_b1:
     """PPSeq is a probabilistic model for detecting sequences of spikes
     embedded in multi-neuronal spike trains. It is based on a Poisson
     latent variable model, akin to a non-negative, convolutional matrix
@@ -52,8 +54,10 @@ class PPSeq:
         self.alpha_b0 = alpha_b0
         self.beta_b0 = beta_b0
 
+        self.templates = self.calc_templates 
+
     @property
-    def templates(self) -> Float[Tensor, "num_templates num_neurons duration"]:
+    def calc_templates(self) -> Float[Tensor, "num_templates num_neurons duration"]:
         """Compute the templates from the mean, std, and amplitude of the Gaussian kernel.
         """
         D = self.template_duration
@@ -147,9 +151,11 @@ class PPSeq:
                                              ratio.unsqueeze(1),
                                              padding=D-1)[:,:,:-D+1], [2])
         beta_post = torch.sum(amplitudes, dim=1)[:,None,None]
-        
+        self.templates = torch.clip((alpha_post - 1) / beta_post, 0)
+
+
         # Note: setting target to conditional mean rather than mode?
-        targets = (alpha_post + 1e-4) / (beta_post + 1e-4) # (K, N, D)
+        targets = (alpha_post - 1 + 1e-4) / (beta_post + 1e-4) # (K, N, D)
         norm_targets = targets / targets.sum(dim=2, keepdim=True)
 
         # Estimate the Gaussian template parameters by matching moments
