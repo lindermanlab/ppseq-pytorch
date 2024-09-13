@@ -127,7 +127,7 @@ def color_plot(data, model, amplitudes):
     plt.title('')
     plt.xlabel('Time')
     plt.ylabel('channel')
-    plt.grid(True)
+    #plt.grid(True)
     plt.show()
 
 

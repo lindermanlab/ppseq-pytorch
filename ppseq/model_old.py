@@ -23,12 +23,10 @@ class PPSeq:
                  num_templates: int,
                  num_neurons: int,
                  template_duration: int,
-                 alpha_a0: float=0., 
+                 alpha_a0: float=0.5, 
                  beta_a0: float=0., 
                  alpha_b0: float=0., 
                  beta_b0: float=0.,
-                 alpha_t0: float=0.,
-                 beta_t0: float=0.,
                  device=None
                  ):
         self.num_templates = num_templates
@@ -42,7 +40,7 @@ class PPSeq:
                 print('Could not find a GPU. Defaulting to CPU instead.')
         self.device = device
     
-
+        # TODO: Initialize parameters with values if not None
         self.base_rates = torch.ones(num_neurons, device=device)
         self.template_scales = torch.ones(num_templates, num_neurons, device=device) / num_neurons
         self.template_offsets = template_duration * torch.rand(num_templates, num_neurons, device=device)
@@ -53,8 +51,6 @@ class PPSeq:
         self.beta_a0 = beta_a0
         self.alpha_b0 = alpha_b0
         self.beta_b0 = beta_b0
-        self.alpha_t0 = alpha_t0
-        self.beta_t0 = beta_t0
 
     @property
     def templates(self) -> Float[Tensor, "num_templates num_neurons duration"]:
@@ -146,12 +142,15 @@ class PPSeq:
         rates = b[:, None] + F.conv1d(amplitudes, kernel, padding=D-1)[:,:-D+1]
         ratio = data / (rates + 1e-7) 
 
+        # TODO: Double check this line
         alpha_post = W * torch.flip(F.conv1d(amplitudes.unsqueeze(1), 
                                              ratio.unsqueeze(1),
-                                             padding=D-1)[:,:,:-D+1], [2]) + self.alpha_t0
-        beta_post = torch.sum(amplitudes, dim=1)[:,None,None] + self.beta_t0
-        targets = torch.clip((alpha_post - 1) / (beta_post), 0)
-        norm_targets = targets / torch.clip(targets.sum(dim=2, keepdim=True), 1e-4) # ensure no division by zero
+                                             padding=D-1)[:,:,:-D+1], [2])
+        beta_post = torch.sum(amplitudes, dim=1)[:,None,None]
+        
+        # Note: setting target to conditional mean rather than mode?
+        targets = (alpha_post + 1e-4) / (beta_post + 1e-4) # (K, N, D)
+        norm_targets = targets / targets.sum(dim=2, keepdim=True)
 
         # Estimate the Gaussian template parameters by matching moments
         ds = torch.arange(self.template_duration, device=self.device)
