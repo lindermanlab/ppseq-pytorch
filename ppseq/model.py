@@ -188,7 +188,7 @@ class PPSeq:
         T = data.shape[1]
         avg_rate = data.mean(dim=1)
         self.base_rates = avg_rate * (1 - sequence_frac)
-        self.template_scales = dist.Dirichlet(concentration * avg_rate).sample(sample_shape=(K,))
+        self.template_scales = dist.Dirichlet(torch.clip(concentration * avg_rate, 1e-7)).sample(sample_shape=(K,))
         self.template_offsets = D * torch.rand(K, N, device=self.device)
         self.template_widths = torch.ones(K, N, device=self.device)
 
@@ -217,8 +217,7 @@ class PPSeq:
         T = data.shape[1]
         avg_rate = data.mean(dim=1)
         self.base_rates = avg_rate * (1 - sequence_frac)
-        self.template_scales = dist.Dirichlet(concentration * 
-        avg_rate).sample(sample_shape=(K,))
+        self.template_scales = dist.Dirichlet(torch.clip(concentration * avg_rate, 1e-7)).sample(sample_shape=(K,))
         self.template_offsets = D * torch.rand(K, N, device=self.device)
         self.template_widths = torch.ones(K, N, device=self.device)
 
@@ -455,7 +454,7 @@ class CAVI:
         T = data.shape[1]
         avg_rate = data.mean(dim=1)
         self.base_rates = avg_rate * (1 - sequence_frac)
-        self.template_scales = dist.Dirichlet(concentration * avg_rate).sample(sample_shape=(K,))
+        self.template_scales = dist.Dirichlet(torch.clip(concentration * avg_rate, 1e-7)).sample(sample_shape=(K,))
         self.template_offsets = D * torch.rand(K, N, device=self.device)
         self.template_widths = torch.ones(K, N, device=self.device)
 
