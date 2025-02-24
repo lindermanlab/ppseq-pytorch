@@ -18,6 +18,8 @@ class batchPPseq(PPSeq):
                  beta_a0: float=0., 
                  alpha_b0: float=0., 
                  beta_b0: float=0.,
+                 alpha_t0: float=0.,
+                 beta_t0:float=0.,
                  device=None):
                  super().__init__(num_templates,
                  num_neurons,
@@ -26,6 +28,8 @@ class batchPPseq(PPSeq):
                  beta_a0, 
                  alpha_b0, 
                  beta_b0,
+                 alpha_t0,
+                 beta_t0,
                  device)
     
     def fit(self,
@@ -40,7 +44,7 @@ class batchPPseq(PPSeq):
         
 
         init_method = dict(random=self.initialize_random)[initialization.lower()]
-        amplitude_batches =[init_method(data) for data in data_batches]
+        amplitude_batches =[init_method(data.squeeze()) for data in data_batches]
 
         # TODO: Initialize amplitudes more intelligently?
         # amplitudes = torch.rand(K, T, device=self.device) + 1e-4
@@ -50,12 +54,13 @@ class batchPPseq(PPSeq):
         for _ in progress_bar(range(num_iter)):
             ll = 0
             for i, data in enumerate(data_batches):
+                data = data.squeeze() # prevents indexing error when data_shape = (1, N, T) (e.g in a torch dataloader)
                 amplitude_batches[i] = self._update_amplitudes(data, 
                     amplitude_batches[i])
                 self._update_base_rates(data, amplitude_batches[i])
                 self._update_templates(data, amplitude_batches[i])
                 ll += self.log_likelihood(data, amplitude_batches[i])
-            lps.append(ll)
+            lps.append(ll) #return the sum or avg log likelihood?
 
         lps = torch.stack(lps) if num_iter > 0 else torch.tensor([])
         return lps, amplitude_batches
