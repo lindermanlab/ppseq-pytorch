@@ -224,16 +224,17 @@ def plot_model(templates, amplitude, data, scores=None, lw=2, figsize=(12, 6), s
     t_spc = spc * abs(templates).max()
     for n in range(K):
         ax = fig.add_subplot(gs[1, n])
-        ax.plot(dt, templates[n].T - t_spc * torch.arange(N),
-                '-', color=palette[n % len(palette)], lw=lw)
+        # ax.plot(dt, templates[n].T - t_spc * torch.arange(N),
+        #         '-', color=palette[n % len(palette)], lw=lw)
+        plt.imshow(templates[n], aspect='auto')
         ax.set_xlabel("delay $d$")
-        ax.set_xlim([0, D])
-        ax.set_yticks(-t_spc * torch.arange(N))
-        ax.set_yticklabels([])
-        ax.set_ylim(-N * t_spc, t_spc)
+        # ax.set_xlim([0, D])
+        # ax.set_yticks(-t_spc * torch.arange(N))
+        # ax.set_yticklabels([])
+        # ax.set_ylim(-N * t_spc, t_spc)
         if n == 0:
-            ax.set_ylabel("channels $n$")
-        ax.set_title("$W_{{ {} }}$".format(n+1))
+            ax.set_ylabel("neurons $n$")
+        ax.set_title("template $W_{{ {} }}$".format(n+1))
 
     # plot the amplitudes for each neuron
     ax = fig.add_subplot(gs[0, -1])
@@ -244,6 +245,7 @@ def plot_model(templates, amplitude, data, scores=None, lw=2, figsize=(12, 6), s
     for n in range(K):
         ax.plot(amplitude[n] - a_spc * n, '-',
                 color=palette[n % len(palette)], lw=lw)
+        ax.axhline(-a_spc * n, color='gray', lw=0.5)
 
         if scores is not None:
             ax.plot(scores[n] - a_spc * n, ':', color=palette[n % len(palette)], lw=lw,
@@ -251,9 +253,9 @@ def plot_model(templates, amplitude, data, scores=None, lw=2, figsize=(12, 6), s
 
     ax.set_xlim([0, T])
     ax.set_xticklabels([])
-    ax.set_yticks(-a_spc * torch.arange(K).numpy())
-    ax.set_yticklabels([])
-    ax.set_ylabel("neurons $k$")
+    # ax.set_yticks(-a_spc * torch.arange(K).numpy())
+    # ax.set_yticklabels([])
+    ax.set_ylabel("num spikes")
     ax.set_title("amplitude $a$")
     if scores is not None:
         ax.legend()
@@ -261,11 +263,13 @@ def plot_model(templates, amplitude, data, scores=None, lw=2, figsize=(12, 6), s
     # plot the data
     ax = fig.add_subplot(gs[1, -1])
     d_spc = 1.05 * abs(data).max()
-    ax.plot(data.T - d_spc * torch.arange(N), '-', color='gray', lw=lw)
+    masked_data = data.clone()
+    masked_data[masked_data == 0] = torch.nan
+    ax.plot(masked_data.T - d_spc * torch.arange(N), '|', color='gray', lw=lw, ms=2)
     ax.set_xlabel("time $t$")
     ax.set_xlim([0, T])
     ax.set_yticks(-d_spc * torch.arange(N).numpy())
     ax.set_yticklabels([])
     ax.set_ylim(-N * d_spc, d_spc)
     # ax.set_ylabel("channels $c$")
-    ax.set_title("data $\mathbb{E}[X]$")
+    ax.set_title(r"spikes $X$")

@@ -138,22 +138,26 @@ class PPSeq:
 
         alpha_post = torch.sum(ratio, dim=1) * b + self.alpha_b0
         beta_post = T + self.beta_b0
-        self.base_rates = torch.clip((alpha_post - 1) / beta_post, 0)
+        # self.base_rates = torch.clip((alpha_post - 1) / beta_post, 0)
+        self.base_rates = torch.clip(alpha_post / beta_post, 1e-4)
         
     def _update_templates(self, 
                           data, 
                           amplitudes):
+        
         D = self.template_duration
         b, W = self.base_rates, self.templates
         kernel = torch.flip(W.permute(1,0,2), [2])
         rates = b[:, None] + F.conv1d(amplitudes, kernel, padding=D-1)[:,:-D+1]
         ratio = data / (rates + 1e-7) 
 
-        alpha_post = W * torch.flip(F.conv1d(amplitudes.unsqueeze(1), 
-                                             ratio.unsqueeze(1),
-                                             padding=D-1)[:,:,:-D+1], [2]) + self.alpha_t0
-        beta_post = torch.sum(amplitudes, dim=1)[:,None,None] + self.beta_t0
-        targets = torch.clip((alpha_post - 1) / (beta_post), 0)
+        alpha_post = self.alpha_t0 + W * torch.flip(
+            F.conv1d(amplitudes.unsqueeze(1), 
+                     ratio.unsqueeze(1), 
+                     padding=D-1)[:,:,:-D+1], [2])
+        beta_post = self.beta_t0 + torch.sum(amplitudes, dim=1)[:,None,None]
+        # targets = torch.clip((alpha_post - 1) / (beta_post), 1e-4)
+        targets = torch.clip((alpha_post) / (beta_post), 1e-4)
         norm_targets = targets / torch.clip(targets.sum(dim=2, keepdim=True), 1e-4) # ensure no division by zero
 
         # Estimate the Gaussian template parameters by matching moments
@@ -232,10 +236,24 @@ class PPSeq:
         amplitudes *= sequence_frac * data.sum() / K
         return amplitudes
     
+    def initialize_none(self, data):
+        """
+        Don't change the templates and base rates.
+        Initialize the amplitudes to zeros.
+        """
+        K = self.num_templates
+        T = data.shape[1]
+
+        # amplitudes = torch.ones((K, T))
+        amplitudes = dist.Uniform(0, 1).sample((K, T))
+        return amplitudes
+    
     def fit(self,
             data: Float[Tensor, "num_neurons num_timesteps"],
             num_iter: int=50,
             initialization='default',
+            fit_templates=True,
+            fit_base_rates=True,
             ):
         """
         Fit the model with expectation-maximization (EM).
@@ -246,6 +264,7 @@ class PPSeq:
         init_method = dict(
             random=self.initialize_random,
             default=self.initialize_default,
+            none=self.initialize_none,
             )[initialization.lower()]
         amplitudes = init_method(data)
 
@@ -254,14 +273,12 @@ class PPSeq:
         lps = []
         for _ in progress_bar(range(num_iter)):
             amplitudes = self._update_amplitudes(data, amplitudes)
-            self._update_base_rates(data, amplitudes)
-            self._update_templates(data, amplitudes)
+            if fit_base_rates: self._update_base_rates(data, amplitudes)
+            if fit_templates: self._update_templates(data, amplitudes)
             lps.append(self.log_likelihood(data, amplitudes))
 
         lps = torch.stack(lps) if num_iter > 0 else torch.tensor([])
         return lps, amplitudes
-
-
 
 
 
