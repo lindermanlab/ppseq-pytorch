@@ -47,6 +47,7 @@ class PPSeq:
     
 
         self.base_rates = torch.ones(num_neurons, device=device)
+
         self.template_scales = torch.ones(num_templates, num_neurons, device=device) / num_neurons
         self.template_offsets = template_duration * torch.rand(num_templates, num_neurons, device=device)
         self.template_widths = torch.ones(self.num_templates, self.num_neurons, device=device)
@@ -59,6 +60,17 @@ class PPSeq:
         self.alpha_t0 = alpha_t0
         self.beta_t0 = beta_t0
 
+    def to(self, map_location: str | torch.DeviceObjType | torch.dtype):
+
+        self.base_rates = self.base_rates.to(map_location)
+        self.template_scales = self.template_scales.to(map_location)
+        self.template_offsets = self.template_offsets.to(map_location)
+        self.template_widths = self.template_widths.to(map_location)
+
+        if not isinstance(map_location, torch.dtype):
+            self.device=map_location
+
+
     @property
     def templates(self) -> Float[Tensor, "num_templates num_neurons duration"]:
         """Compute the templates from the mean, std, and amplitude of the Gaussian kernel.
@@ -68,6 +80,7 @@ class PPSeq:
         ds = torch.arange(D, device=self.device)[:, None, None]
         p = dist.Normal(mu, sigma)
         W = p.log_prob(ds).exp().permute(1,2,0) 
+        
         return W / W.sum(dim=2, keepdim=True) * amp[:, :, None]
         
     def reconstruct(self,
