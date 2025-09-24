@@ -23,6 +23,11 @@ def generate_data_v4(N=50, T=1000, K=2, D=5):
   t2 = np.random.choice(T-10, t, replace=False)
   true_a[0, t1] = 15
   true_a[1, t2] = 15
+  # TODO[GLM]: Replace constant background with a dynamic GLM background, e.g.:
+  #   X_cov = design_matrix(T, P)                 # (T, P) e.g., low-freq trends, task events, motion
+  #   beta  = torch.randn(N, P) * 0.1            # (N, P)
+  #   true_b = torch.exp(X_cov @ beta.T).T       # (N, T)
+  # For legacy behavior keep constant for now:
   true_b = torch.ones(N) * 0.04
   lambdas = true_b.view(N,1) + F.conv1d(true_a, torch.flip(true_w.permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
   X = torch.poisson(lambdas)
@@ -46,6 +51,7 @@ def generate_data_v3(N=50, T=1000, K=2, D=10):
   t2 = np.random.choice(T-10, t, replace=False)
   true_a[0, t1] = 100
   true_a[1, t2] = 100
+  # TODO[GLM]: As above, switch to λ_bg[n,t] = exp(X_t β_n) to create time-varying backgrounds.
   true_b = torch.ones(N) * 0.01
   lambdas = true_b.view(N,1) + F.conv1d(true_a, torch.flip(true_w.permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
   X = torch.poisson(lambdas)
@@ -121,6 +127,12 @@ def generate_data_v1(num_timesteps,
     #data += dist.Normal(0.0, noise_std).sample(data.shape)
     true_a = amplitudes
     true_w = templates
+    # TODO[GLM]: Replace constant `true_b` with a dynamic background:
+    #     X_cov = design_matrix(num_timesteps, P)     # (T, P)
+    #     beta  = torch.randn(num_neurons, P) * 0.1   # (N, P)
+    #     true_bg = torch.exp(X_cov @ beta.T).T       # (N, T)
+    # Then use:
+    #     lambdas = true_bg + F.conv1d(true_a, ...)
     true_b = torch.rand(N) + 0.2
     lambdas = true_b.view(N,1) + F.conv1d(true_a, torch.flip(true_w.permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
     data = torch.poisson(lambdas)
@@ -134,9 +146,22 @@ def generate_data_v0(N=8, T=2000, K=5, D=10):
 
   true_w = torch.linspace(10, 0, D).repeat(K,N,1)
   true_a = torch.rand((K,T)) * 10
+  # TODO[GLM]: Make the background dynamic here too for GLM training/validation.
   true_b = torch.rand(N) *10
   lambdas = true_b.view(N,1) + F.conv1d(true_a, torch.flip(true_w.permute(1,0,2),[2]), padding=D-1)[:,:-D+1]
   X = torch.poisson(lambdas)
   return X, true_b, true_a, true_w
+
+def generate_data_glm(N=50, T=1000, K=2, D=5, P=3):
+    """
+    # TODO[GLM]: New helper to synthesize data with a *dynamic* background rate.
+    #   1) X_cov: (T, P) time covariates (e.g., constant 1, slow trend, event indicators).
+    #   2) α: (N,), β: (N, P)  → λ_bg[n,t] = exp( α[n] + X_cov[t] @ β[n] ).
+    #   3) Sequence parameters a, W as in existing generators.
+    #   4) λ = λ_bg + (W ⊛ a) and X ~ Poisson(λ).
+    # Return:
+    #   X, λ, α, β, X_cov, true_a, true_w  (and optionally λ_bg)
+    """
+    raise NotImplementedError("TODO[GLM]: implement generate_data_glm as described above.")
 
   

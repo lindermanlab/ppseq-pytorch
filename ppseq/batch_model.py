@@ -27,6 +27,8 @@ class batchPPseq(PPSeq):
                  alpha_b0, 
                  beta_b0,
                  device)
+        # TODO[GLM]: To support a dynamic background in batched training, plumb a `bg_model` and
+        # optional `covariate_dim` through to `PPSeq.__init__` (add those args here and forward them).
     
     def fit(self,
             data_batches,
@@ -41,6 +43,8 @@ class batchPPseq(PPSeq):
 
         init_method = dict(random=self.initialize_random)[initialization.lower()]
         amplitude_batches =[init_method(data) for data in data_batches]
+        # TODO[GLM]: Accept `covariate_batches: Optional[List[Tensor]]` aligned with `data_batches`.
+        # Thread `covariate_batches[i]` into the amplitude/template/background updates below.
 
         # TODO: Initialize amplitudes more intelligently?
         # amplitudes = torch.rand(K, T, device=self.device) + 1e-4
@@ -53,6 +57,18 @@ class batchPPseq(PPSeq):
                 amplitude_batches[i] = self._update_amplitudes(data, 
                     amplitude_batches[i])
                 self._update_base_rates(data, amplitude_batches[i])
+            # for i, data in enumerate(data_batches):
+            #     amplitude_batches[i] = self._update_amplitudes(
+            #         data,
+            #         amplitude_batches[i]
+            #         # TODO[GLM]: covariates=covariate_batches[i]
+            #     )
+            #     self._update_base_rates(
+            #         data,
+            #         amplitude_batches[i]
+            #         # TODO[GLM]: covariates=covariate_batches[i]
+            #     )
+
                 self._update_templates(data, amplitude_batches[i])
                 ll += self.log_likelihood(data, amplitude_batches[i])
             lps.append(ll)

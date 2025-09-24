@@ -82,6 +82,11 @@ def color_plot(data, model, amplitudes):
     N, T, K = data.shape[0], data.shape[1], scale.shape[0]
     D = W.shape[2]
     black_nt = b.view(N, 1).expand(N, T)
+    # TODO[GLM]: If background is dynamic (Poisson GLM), `model.base_rates` is not sufficient.
+    # Replace with:
+    #   black_nt = model.background_rate(covariates, T)   # shape (N, T)
+    # and extend `color_plot(...)` to accept a `covariates` argument and pass it along.
+    
     #red_nt = F.conv1d(a[[0], :], torch.flip(
     #    W[[0]].permute(1, 0, 2), [2]), padding=D-1)[:, :-D+1]
    # blue_nt = F.conv1d(a[[1], :], torch.flip(

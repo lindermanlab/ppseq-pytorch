@@ -45,6 +45,26 @@ class PPSeq:
                 print('Could not find a GPU. Defaulting to CPU instead.')
         self.device = device
     
+        # TODO[GLM]: The current implementation assumes a *constant* background rate per neuron:
+        #            `self.base_rates: Float[Tensor, "num_neurons"]` (shape = N, broadcast across time).
+        #            We want a *dynamic* background, modeled by a Poisson GLM with a log link:
+        #              λ_bg[n,t] = exp( α[n] + X_t @ β[n] )   where X_t are covariates at time t.
+        # Plan:
+        #   • Add optional constructor args:
+        #       - `bg_model: Optional[nn.Module] = None` or `covariate_dim: Optional[int] = None`
+        #   • If `covariate_dim` is provided, instantiate a GLM and store:
+        #       - `self.bg_model: Optional[PoissonGLM]`
+        #       - `self.use_dynamic_background: bool = self.bg_model is not None`
+        #   • Keep `self.base_rates` only as a fallback (constant background) AND to seed GLM intercepts.
+        #   • Add a helper:
+        #       def background_rate(self, covariates: Optional[Tensor], T: int) -> Tensor:
+        #           if self.bg_model is None: return self.base_rates[:, None].expand(self.num_neurons, T)
+        #           else: return self.bg_model(covariates)  # returns (N, T)
+        # Training (during the M-step for background parameters):
+        #   Given current total rate λ[n,t] and data x[n,t], compute expected background counts
+        #       y_bg = x * λ_bg / clamp(λ, 1e-7)
+        #   and maximize:  L = sum_{n,t} [ y_bg * η - exp(η) ]  - λ_reg * ||β||_2^2,  where η = α + Xβ
+        #   with a few gradient steps (Adam/LBFGS). See TODOs in `_update_base_rates` and `fit` below.
 
         self.base_rates = torch.ones(num_neurons, device=device)
         self.template_scales = torch.ones(num_templates, num_neurons, device=device) / num_neurons
@@ -80,6 +100,17 @@ class PPSeq:
         ----------
         amplitudes: the amplitudes for each template as a function of time 
         """
+        # TODO[GLM]: Make background dynamic.
+        # CURRENT: uses constant background `self.base_rates[:, None]` (N×1) broadcast across time.
+        # CHANGE: extend signature to accept `covariates: Optional[Tensor]` and compute:
+        #     bg  = self.background_rate(covariates, T)  # (N, T)
+        #     seq = F.conv1d(amplitudes, kernel, padding=D-1)[:, :-D+1]
+        #     return torch.clamp(bg + seq, min=1e-7)
+        # Notes:
+        #   • `covariates` can be (T, P) shared across neurons or (N, T, P) per-neuron.
+        #   • Keep current path when `self.bg_model is None`.
+        return self.base_rates[:, None] + F.conv1d(amplitudes, kernel, padding=D-1)[:,:-D+1]
+
         D = self.template_duration
         kernel = torch.flip(self.templates.permute(1,0,2), [2])
         return self.base_rates[:, None] + F.conv1d(amplitudes, kernel, padding=D-1)[:,:-D+1]
@@ -103,6 +134,10 @@ class PPSeq:
         -------
         Scalar log probability
         """
+        # TODO[GLM]: When background is dynamic, compute rates via `self.reconstruct(amplitudes, covariates)`
+        # and thread `covariates` through `log_likelihood`:
+        #   def log_likelihood(self, data, amplitudes, rows=None, cols=None, covariates=None)
+
         D = self.template_duration
         kernel = torch.flip(self.templates.permute(1,0,2),[2])
         rates = self.base_rates[:, None] + F.conv1d(amplitudes, kernel, padding=D-1)[:,:-D+1]
@@ -119,6 +154,11 @@ class PPSeq:
         
     
     def _update_amplitudes(self, data, amplitudes):
+        # TODO[GLM]: Replace `b[:, None]` with dynamic background:
+        #   bg   = self.background_rate(covariates, T)     # (N, T)
+        #   rates = torch.clamp(bg + F.conv1d(...), 1e-7)
+        # Thread `covariates` into this method's signature to avoid global state.
+
         D, T = self.template_duration, data.shape[1]
         b, W = self.base_rates, self.templates
         kernel = torch.flip(W.permute(1,0,2), [2])
@@ -130,6 +170,19 @@ class PPSeq:
         return torch.clip((alpha_post - 1) / beta_post, 0)
     
     def _update_base_rates(self, data, amplitudes):
+        # TODO[GLM]: Replace this constant-background update with a Poisson GLM M-step.
+        #   1) Compute current bg (constant or GLM) and total rate:
+        #        bg   = self.background_rate(covariates, T)            # (N, T)
+        #        seq  = F.conv1d(amplitudes, kernel, padding=D-1)[:, :-D+1]
+        #        lam  = torch.clamp(bg + seq, 1e-7)
+        #   2) Compute expected background counts:
+        #        y_bg = data * (bg / lam)
+        #   3) If using GLM:
+        #        • take a few optimizer steps to maximize Σ y_bg * η - exp(η) w.r.t. (α, β),
+        #          where η = α[n] + X_t @ β[n] and X are covariates provided by the caller.
+        #        • support ℓ2 regularization on β and optional time-basis smoothing.
+        #      Else (no GLM), keep existing constant-rate posterior update for `self.base_rates`.
+        #   4) Accept `covariates` as an argument to this method and plumb it through from `.fit(...)`.
         D, T = self.template_duration, data.shape[1]
         b, W = self.base_rates, self.templates
         kernel = torch.flip(W.permute(1,0,2),[2])
@@ -144,7 +197,9 @@ class PPSeq:
     def _update_templates(self, 
                           data, 
                           amplitudes):
-        
+        # TODO[GLM]: Compute rates using dynamic background if enabled:
+        #   bg  = self.background_rate(covariates, data.shape[1])
+        #   rates = torch.clamp(bg + F.conv1d(...), 1e-7)
         D = self.template_duration
         b, W = self.base_rates, self.templates
         kernel = torch.flip(W.permute(1,0,2), [2])
@@ -188,6 +243,9 @@ class PPSeq:
         data: neurons x time array of spike counts
         sequence_frac: what fraction of spikes are due to sequences rather than background
         """
+        # TODO[GLM]: If using a background GLM, initialize its intercept with
+        #            log(avg_rate * (1 - sequence_frac)) and its weights near zero.
+        #            Keep `self.base_rates` only for the constant-background fallback.
         K, N, D = self.num_templates, self.num_neurons, self.template_duration
         T = data.shape[1]
         avg_rate = data.mean(dim=1)
@@ -217,6 +275,8 @@ class PPSeq:
         data: neurons x time array of spike counts
         sequence_frac: what fraction of spikes are due to sequences rather than background
         """
+        # TODO[GLM]: As above, seed GLM intercepts and zero the weights instead of
+        #            storing a constant background when a GLM is configured.
         K, N, D = self.num_templates, self.num_neurons, self.template_duration
         T = data.shape[1]
         avg_rate = data.mean(dim=1)
@@ -254,6 +314,11 @@ class PPSeq:
             initialization='default',
             fit_templates=True,
             fit_base_rates=True,
+            # TODO[GLM]: new args to support dynamic background training:
+            # covariates=None,           # (T, P) or (N, T, P) design matrix for the GLM
+            # num_glm_steps=5,           # gradient steps for the GLM per EM iteration
+            # glm_lr=1e-2,               # learning rate for the GLM optimizer
+            # glm_l2=0.0,                # L2 regularization on β
             ):
         """
         Fit the model with expectation-maximization (EM).
@@ -267,12 +332,19 @@ class PPSeq:
             none=self.initialize_none,
             )[initialization.lower()]
         amplitudes = init_method(data)
+        # TODO[GLM]: If using a GLM, initialize an optimizer here (e.g., Adam) and store it on `self` or in a local closure; reuse it across EM iterations.
+
 
      
         # Run EM
         lps = []
         for _ in progress_bar(range(num_iter)):
             amplitudes = self._update_amplitudes(data, amplitudes)
+            # TODO[GLM]: pass `covariates`
+            # if fit_base_rates:
+                # TODO[GLM]: call `_update_base_rates(data, amplitudes, covariates)` which, in GLM mode,
+                #            performs a few optimizer steps on the GLM with expected background counts y_bg.
+                # self._update_base_rates(data, amplitudes)
             if fit_base_rates: self._update_base_rates(data, amplitudes)
             if fit_templates: self._update_templates(data, amplitudes)
             lps.append(self.log_likelihood(data, amplitudes))
@@ -321,6 +393,10 @@ class CAVI:
         self.num_templates = num_templates
         self.num_neurons = num_neurons
         self.template_duration = template_duration
+        # TODO[GLM]: Mirror the PPSeq changes:
+        #   • allow optional `bg_model` / `covariate_dim`
+        #   • keep `self.base_rates` as fallback/initialization only
+        #   • provide `self.background_rate(...)`
 
         # Set the device
         if device is None:
@@ -367,6 +443,8 @@ class CAVI:
         D = self.template_duration
         kernel = torch.flip(self.templates.permute(1,0,2), [2])
         rates = self.base_rates[:, None] + F.conv1d(amplitudes, kernel, padding=D-1)[:,:-D+1]
+        # TODO[GLM]: As in PPSeq, compute background via GLM if configured, and add to sequence term.
+        # Extend signature to accept `covariates` and clamp the sum.
         return torch.clamp(rates, min=1e-7)
 
     def log_likelihood(self,
@@ -389,6 +467,7 @@ class CAVI:
         Scalar log probability
         """
         rates = self.reconstruct(amplitudes)
+        # TODO[GLM]: Thread `covariates` through and call `self.reconstruct(amplitudes, covariates)`.
         if rows is None or cols is None:
             return torch.sum(dist.Poisson(rates).log_prob(data))
 
@@ -405,6 +484,7 @@ class CAVI:
         W = self.templates
        
         rates = self.reconstruct(amplitudes)
+        # TODO[GLM]: call `self.reconstruct(amplitudes, covariates)` (accept new arg).
         ratio = data / rates 
 
         alpha_post = amplitudes * F.conv1d(ratio, W, padding=D-1)[:,D-1:] + self.alpha_a0
@@ -415,6 +495,9 @@ class CAVI:
         T = data.shape[1]
         b = self.base_rates
         rates = self.reconstruct(amplitudes)
+        # TODO[GLM]: Replace constant-background update with GLM M-step as in PPSeq:
+        #   y_bg = data * bg / reconstruct(...), then optimize GLM params (α,β).
+        # Accept `covariates` arg and use a few gradient steps per EM iteration
         ratio = data / rates 
 
         alpha_post = torch.sum(ratio, dim=1) * b + self.alpha_b0
@@ -427,6 +510,7 @@ class CAVI:
         D = self.template_duration
         b, W = self.base_rates, self.templates
         rates = self.reconstruct(amplitudes)
+        # TODO[GLM]: ensure this uses dynamic background; thread `covariates` through.
         ratio = data / rates 
 
         # TODO: Double check this line
@@ -471,6 +555,7 @@ class CAVI:
         T = data.shape[1]
         avg_rate = data.mean(dim=1)
         self.base_rates = avg_rate * (1 - sequence_frac)
+        # TODO[GLM]: Initialize GLM intercepts with log(avg_rate*(1-sequence_frac)) and β near zero.
         self.template_scales = dist.Dirichlet(torch.clip(concentration * avg_rate, 1e-7)).sample(sample_shape=(K,))
         self.template_offsets = D * torch.rand(K, N, device=self.device)
         self.template_widths = torch.ones(K, N, device=self.device)
@@ -500,6 +585,7 @@ class CAVI:
         T = data.shape[1]
         avg_rate = data.mean(dim=1)
         self.base_rates = avg_rate * (1 - sequence_frac)
+        # TODO[GLM]: As above, seed GLM intercepts instead of a constant background when GLM is active.
         self.template_scales = dist.Dirichlet(concentration *
         avg_rate).sample(sample_shape=(K,))
         self.template_offsets = D * torch.rand(K, N, device=self.device)
@@ -520,6 +606,7 @@ class CAVI:
             data: Float[Tensor, "num_neurons num_timesteps"],
             num_iter: int=50,
             initialization='default',
+            # TODO[GLM]: add `covariates=None`, `num_glm_steps=5`, `glm_lr=1e-2`, `glm_l2=0.0`
             ):
         """
         Fit the model with expectation-maximization (EM).
@@ -537,9 +624,9 @@ class CAVI:
         # Run EM
         lps = []
         for _ in progress_bar(range(num_iter)):
-            amplitudes = self._update_amplitudes(data, amplitudes)
-            self._update_base_rates(data, amplitudes)
-            self._update_templates(data, amplitudes)
+            amplitudes = self._update_amplitudes(data, amplitudes) # TODO[GLM]: pass `covariates`
+            self._update_base_rates(data, amplitudes) # TODO[GLM]: pass `covariates`
+            self._update_templates(data, amplitudes) # TODO[GLM]: pass `covariates`
             lps.append(self.log_likelihood(data, amplitudes))
 
         lps = torch.stack(lps) if num_iter > 0 else torch.tensor([])
