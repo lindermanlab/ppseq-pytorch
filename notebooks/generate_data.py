@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 import torch.nn.functional as F
 import torch.distributions as dist
 
@@ -152,16 +153,154 @@ def generate_data_v0(N=8, T=2000, K=5, D=10):
   X = torch.poisson(lambdas)
   return X, true_b, true_a, true_w
 
-def generate_data_glm(N=50, T=1000, K=2, D=5, P=3):
+def generate_data_glm(N=50,
+                      T=1000,
+                      K=2,
+                      D=5,
+                      P=3,
+                      seed=None,
+                      num_segments=None,
+                      dense_strength_range=(0.3, 0.9),
+                      sparse_strength_range=(0.1, 0.6)):
     """
-    # TODO[GLM]: New helper to synthesize data with a *dynamic* background rate.
-    #   1) X_cov: (T, P) time covariates (e.g., constant 1, slow trend, event indicators).
-    #   2) α: (N,), β: (N, P)  → λ_bg[n,t] = exp( α[n] + X_cov[t] @ β[n] ).
-    #   3) Sequence parameters a, W as in existing generators.
-    #   4) λ = λ_bg + (W ⊛ a) and X ~ Poisson(λ).
-    # Return:
-    #   X, λ, α, β, X_cov, true_a, true_w  (and optionally λ_bg)
+    Generate Poisson spike trains with a dynamic GLM background.
+
+    Args:
+      N: number of neurons
+      T: number of timebins
+      K: number of latent sequences/events
+      D: filter length (history length) for sequence kernels
+      P: number of time-varying covariates for GLM background
+      seed: optional integer seed for reproducibility
+      num_segments: optional integer number of background segments (alternating sparse/dense).
+        If None, a heuristic based on T is used.
+      dense_strength_range: tuple(low, high) for Uniform sampling of dense log-rate boosts
+        per dense segment (positive offset magnitudes).
+      sparse_strength_range: tuple(low, high) for Uniform sampling of sparse log-rate dips
+        per sparse segment (negative offset magnitudes).
+
+    Returns:
+      X: (N, T) sampled spikes
+      lambdas: (N, T) total firing rates
+      alpha: (N,) neuron-specific intercepts (log-rate baseline)
+      beta: (N, P) neuron-specific GLM covariate weights
+      X_cov: (T, P) design matrix of time covariates
+      true_a: (K, T) latent sequence amplitudes/events
+      true_w: (K, N, D) sequence kernels per neuron
+      lambda_bg: (N, T) background firing rates from GLM
     """
-    raise NotImplementedError("TODO[GLM]: implement generate_data_glm as described above.")
+    # Optional seed for reproducibility of stochastic components
+    if seed is not None:
+      torch.manual_seed(int(seed))
+      np.random.seed(int(seed))
+
+    # Validate and normalize segment controls
+    if num_segments is None:
+      num_segments = max(2, min(12, int(T // 250) + 3))
+    else:
+      num_segments = int(num_segments)
+      num_segments = max(2, min(num_segments, max(2, T)))
+
+    def _check_range(name, r):
+      if not (isinstance(r, (tuple, list)) and len(r) == 2):
+        raise ValueError(f"{name} must be a (low, high) tuple")
+      low, high = float(r[0]), float(r[1])
+      if not (low >= 0 and high > low):
+        raise ValueError(f"{name} must satisfy 0 <= low < high, got {r}")
+      return low, high
+
+    dense_low, dense_high = _check_range('dense_strength_range', dense_strength_range)
+    sparse_low, sparse_high = _check_range('sparse_strength_range', sparse_strength_range)
+
+    # 1) Time-varying covariates X_cov: include constant, slow trend, and sinusoids.
+    t = torch.arange(T, dtype=torch.float32)
+    features = []
+    # Constant term
+    features.append(torch.ones(T))
+    if P >= 2:
+      # Slow linear trend in [-1, 1]
+      features.append((t - (T - 1) / 2.0) / ((T - 1) / 2.0 + 1e-8))
+    if P >= 3:
+      # Very low-frequency sinusoid
+      features.append(torch.sin(2 * torch.pi * t / max(50.0, T / 5.0)))
+    if P >= 4:
+      features.append(torch.cos(2 * torch.pi * t / max(80.0, T / 4.0)))
+    # Add additional random-phase low-frequency sinusoids if P > 4
+    while len(features) < P:
+      period = torch.clamp(torch.rand(1) * (T / 3.0 - T / 10.0) + T / 10.0, min=10.0).item()
+      phase = torch.rand(1).item() * 2 * np.pi
+      features.append(torch.sin(2 * torch.pi * t / period + phase))
+    X_cov = torch.stack(features[:P], dim=1)  # (T, P)
+
+    # 2) Neuron-specific GLM parameters: alpha (intercepts) and beta (weights)
+    # Slightly denser background: center around exp(-2.5) ≈ 0.08 spikes/bin
+    alpha = torch.randn(N) * 0.3 - 0.05               # (N,)
+    beta = torch.randn(N, P) * 0.3                   # (N, P)
+
+    # Background segments for sparse/denser periods (piecewise-constant offset in log-rate)
+    # Use requested number of segments and alternate signs to ensure variety
+    # Random change-points (ensure non-empty segments)
+    if num_segments > 1 and T > num_segments:
+      change_points = torch.sort(torch.randperm(T - 1)[: num_segments - 1] + 1).values.tolist()
+    else:
+      change_points = []
+    boundaries = [0] + change_points + [T]
+    # Alternate +/- with random magnitudes to ensure sparse and dense blocks
+    start_sign = 1 if torch.rand(1).item() > 0.5 else -1
+    num_blocks = len(boundaries) - 1
+    dense_mags = torch.empty(num_blocks).uniform_(dense_low, dense_high)
+    sparse_mags = torch.empty(num_blocks).uniform_(sparse_low, sparse_high)
+    segment_effects = []
+    for i in range(num_blocks):
+      sign = start_sign if i % 2 == 0 else -start_sign
+      if sign > 0:
+        segment_effects.append(dense_mags[i].item())
+      else:
+        segment_effects.append(-sparse_mags[i].item())
+    eta_segment = torch.zeros(T)
+    for i in range(len(boundaries) - 1):
+      s, e = boundaries[i], boundaries[i + 1]
+      eta_segment[s:e] = segment_effects[i]
+
+    # Background firing rate λ_bg[n, t] = exp(alpha[n] + X_cov[t] @ beta[n] + segment_offset[t])
+    eta_bg = alpha.view(N, 1) + (X_cov @ beta.T).T + eta_segment.view(1, T)
+    lambda_bg = torch.exp(eta_bg)  # (N, T)
+
+    # 3) Latent sequence amplitudes true_a and kernels true_w
+    # Generate neuron-specific filters with peaks around D/2 and modest width
+    mu = D / 2 + (torch.rand(K, N) - 0.5) * (D / 3)
+    true_w = torch.exp(
+      dist.Normal(mu, 0.5).log_prob(torch.arange(D).unsqueeze(1).unsqueeze(1))
+    ).permute(1, 2, 0).expand(K, N, D)               # (K, N, D)
+
+    # Make two groups of neurons selective to different sequences (if K>=2)
+    if K >= 2:
+      true_w[0, N // 2:, :] = 0
+      true_w[1, :N // 2, :] = 0
+
+    # Sparse event trains per sequence
+    true_a = torch.zeros((K, T))
+    num_events = max(1, int(T / max(200, T ** 0.7)))
+    rng1 = np.random.choice(T - 7, num_events, replace=False) if T > 7 else np.array([], dtype=int)
+    rng2 = np.random.choice(T - 10, num_events, replace=False) if T > 10 else np.array([], dtype=int)
+    if K >= 1:
+      true_a[0, rng1] = 15.0
+    if K >= 2:
+      true_a[1, rng2] = 15.0
+    # Optionally add tiny jitter noise
+    true_a = true_a + 0.0 * torch.rand_like(true_a)  # keep deterministic magnitude
+
+    # Convolution (W ⊛ a) using 1D conv with flipped kernels
+    conv_term = F.conv1d(
+      true_a,                                    # (K, T)
+      torch.flip(true_w.permute(1, 0, 2), [2]),  # weight: (N, K, D)
+      padding=D - 1
+    )[:, : -D + 1]                                # (N, T)
+
+    # 4) Total rate and spikes
+    lambdas = lambda_bg + conv_term               # (N, T)
+    X = torch.poisson(lambdas)
+
+    return X, lambdas, alpha, beta, X_cov, true_a, true_w, lambda_bg
 
   
