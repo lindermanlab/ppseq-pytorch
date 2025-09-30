@@ -46,6 +46,7 @@ class GLMPPSeq:
                  use_bias=True,
                  empirical_glm=True,
                  n_covariates=6,
+                 l1=0.0,
                  ):
         self.num_templates = num_templates
         self.num_neurons = num_neurons
@@ -78,6 +79,7 @@ class GLMPPSeq:
         self.alpha_t0 = alpha_t0
         self.beta_t0 = beta_t0
         self.empirical_glm = empirical_glm
+        self.l1 = l1
 
     @property
     def templates(self) -> Float[Tensor, "num_templates num_neurons duration"]:
@@ -327,16 +329,24 @@ class GLMPPSeq:
         assert torch.all(torch.isfinite(delays))
         assert torch.all(torch.isfinite(widths))
 
+        # ---- L1 prox on scales (encourages neuron-level sparsity per template)
+        if self.l1 > 0:
+            # soft-threshold (since scales ≥ 0 we can skip sign/abs handling)
+            scales = torch.relu(scales - self.l1)
+
+        # Keep identifiability: scales sum to 1 across neurons for each template
+        eps = 1e-12
+        row_sums = scales.sum(dim=1, keepdim=True)
+        # If a whole row goes to zero, put uniform mass back to avoid NaNs
+        zero_rows = (row_sums <= eps).squeeze(1)
+        if zero_rows.any():
+            scales[zero_rows] = 1.0 / scales.shape[1]
+            row_sums = scales.sum(dim=1, keepdim=True)
+
         # Make the model identifiable by constraining the scales to sum to one across neurons
         scales /= scales.sum(axis=1, keepdim=True)
         self.template_scales = scales
 
-        # add L1 regularization
-        lambda_l1 = 1e-3  # hyperparameter
-        self.template_scales = torch.sign(scales) * torch.maximum(
-            torch.abs(scales) - lambda_l1, 
-            torch.zeros_like(scales)
-        )
         self.template_offsets = delays
         self.template_widths = widths
 
