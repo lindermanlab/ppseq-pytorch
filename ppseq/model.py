@@ -1,16 +1,5 @@
 #PPSeq sets to mode, CAVI sets to mean
 
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.distributions as dist
-
-from fastprogress import progress_bar
-from torch import Tensor
-from jaxtyping import Float
-
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -120,8 +109,6 @@ class GLMPPSeq:
         self.l1_amp = l1_amp
         self.rbf_width = rbf_width
 
-        self.l2_temporal = 0.1  # Tune this parameter
-
     @property
     def templates(self) -> Float[Tensor, "num_templates num_neurons duration"]:
         """Compute the templates from the mean, std, and amplitude of the Gaussian kernel.
@@ -200,7 +187,6 @@ class GLMPPSeq:
         log_likelihood = torch.sum(log_probs)
         return log_likelihood
 
-
     def _update_amplitudes(self, data, amplitudes, X):
         D, T = self.template_duration, data.shape[1]
         W = self.templates
@@ -258,7 +244,7 @@ class GLMPPSeq:
         # Create smooth temporal covariates - consider using RBF basis functions
         X = self.create_smooth_covariates()
         if self.use_bias:
-        X = torch.cat([torch.ones(1, T, device=X.device), X], dim=0)  # (P+1, T)
+            X = torch.cat([torch.ones(1, T, device=X.device), X], dim=0)  # (P+1, T)
 
         # expected background
         W = self.templates
