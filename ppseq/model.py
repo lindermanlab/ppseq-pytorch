@@ -1,5 +1,3 @@
-#PPSeq sets to mode, CAVI sets to mean
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -23,7 +21,7 @@ class GLMPPSeq:
     - Sequence events are defined by time-varying amplitudes and Gaussian-shaped templates for each sequence and neuron.
     - Gaussian templates are parameterized by per-template, per-neuron scale (amplitude), delay (offset), and width (spread).
     - EM algorithm (CAVI) for fitting, updating sequence amplitudes, background GLM weights, and template parameters.
-    - Background covariates can be constructed either from empirical population activity or RBF basis functions.
+    - Background covariates constructed using RBF basis functions.
     - Flexible regularization for l1/l2 sparsity and temporal smoothness.
 
     Parameters:
@@ -36,10 +34,9 @@ class GLMPPSeq:
     alpha_t0, beta_t0      : Prior hyperparameters for template weights.
     device                 : Torch device (defaults to CUDA if available).
     use_bias (bool)        : If True, include intercept in GLM.
-    empirical_glm (bool)   : If True, use data-derived covariates; else use fixed RBFs.
     n_covariates (int)     : Number of covariates for GLM.
     l1, l1_amp (float)     : L1 regularization weights for sparsity.
-    rbf_width (float)      : Width for RBF covariates (if used).
+    rbf_width (float)      : Scale factor for RBF width (relative to center spacing, default 0.2).
 
     Methods:
     --------
@@ -68,11 +65,10 @@ class GLMPPSeq:
                  beta_t0: float=0.,
                  device=None,
                  use_bias=True,
-                 empirical_glm=True,
                  n_covariates=6,
                  l1=0.0,
                  l1_amp=0.0,
-                 rbf_width=2.5
+                 rbf_width=0.2
                  ):
         self.num_templates = num_templates
         self.num_neurons = num_neurons
@@ -104,7 +100,6 @@ class GLMPPSeq:
         self.beta_b0 = beta_b0
         self.alpha_t0 = alpha_t0
         self.beta_t0 = beta_t0
-        self.empirical_glm = empirical_glm
         self.l1 = l1
         self.l1_amp = l1_amp
         self.rbf_width = rbf_width
@@ -216,18 +211,18 @@ class GLMPPSeq:
         # Create RBF basis functions with centers spread across time
         n_basis = self.covariate_dim 
         centers = torch.linspace(0, T-1, n_basis, device=device)
-        width = T / (n_basis - 1) * 0.2  # Slow/wide RBFs
+        width = (T / (n_basis - 1)) * self.rbf_width  # Width scaled by rbf_width parameter
         
         # Create time indices
         t = torch.arange(T, dtype=torch.float32, device=device)
         
         # Compute RBF basis functions
-        X = []
+        phi = []
         for c in centers:
             rbf = torch.exp(-(t - c)**2 / (2 * width**2))
-            X.append(rbf)
+            phi.append(rbf)
         
-        return torch.stack(X)  # (covariate_dim, T)
+        return torch.stack(phi)  # (covariate_dim, T)
 
     def _update_base_rates(self, data, amplitudes, max_iter=10, tol=1e-4):
         """
@@ -292,12 +287,22 @@ class GLMPPSeq:
 
     def _update_templates(self,
                           data,
-                          amplitudes):
+                          amplitudes,
+                          phi):
+        """
+        Update template parameters using current amplitudes.
 
+        Parameters
+        ----------
+        data : spike count matrix (N, T)
+        amplitudes : current amplitude estimates (K, T)
+        phi : covariates for GLM background (P, T) or (P+1, T) with bias
+        """
         D = self.template_duration
-        b, W = self.base_rates, self.templates
+        W = self.templates
         kernel = torch.flip(W.permute(1,0,2), [2])
-        rates = b[:, None] + F.conv1d(amplitudes, kernel, padding=D-1)[:,:-D+1]
+        background = self.get_background_rates(phi)
+        rates = background + F.conv1d(amplitudes, kernel, padding=D-1)[:,:-D+1]
         ratio = data / (rates + 1e-7)
 
         alpha_post = self.alpha_t0 + W * torch.flip(
@@ -356,6 +361,14 @@ class GLMPPSeq:
         T = data.shape[1]
         avg_rate = data.mean(dim=1)
         self.base_rates = avg_rate * (1 - sequence_frac)
+        
+        # Initialize GLM intercept to match expected background rate
+        if self.use_bias:
+            self.beta[:, 0] = torch.log(avg_rate * (1 - sequence_frac) + 1e-7)
+            self.beta[:, 1:] = 0.0
+        else:
+            self.beta[:, :] = 0.0
+        
         self.template_scales = dist.Dirichlet(torch.clip(concentration * avg_rate, 1e-7)).sample(sample_shape=(K,))
         self.template_offsets = D * torch.rand(K, N, device=self.device)
         self.template_widths = torch.ones(K, N, device=self.device)
@@ -385,6 +398,14 @@ class GLMPPSeq:
         T = data.shape[1]
         avg_rate = data.mean(dim=1)
         self.base_rates = avg_rate * (1 - sequence_frac)
+        
+        # Initialize GLM intercept to match expected background rate
+        if self.use_bias:
+            self.beta[:, 0] = torch.log(avg_rate * (1 - sequence_frac) + 1e-7)
+            self.beta[:, 1:] = 0.0
+        else:
+            self.beta[:, :] = 0.0
+        
         self.template_scales = dist.Dirichlet(torch.clip(concentration * avg_rate, 1e-7)).sample(sample_shape=(K,))
         self.template_offsets = D * torch.rand(K, N, device=self.device)
         self.template_widths = torch.ones(K, N, device=self.device)
@@ -409,7 +430,7 @@ class GLMPPSeq:
         T = data.shape[1]
 
         amplitudes = dist.Uniform(0, 1).sample((K, T))
-        return amplitudes
+        return amplitudes.to(self.device)
 
     def fit(self,
             data: Float[Tensor, "num_neurons num_timesteps"],
@@ -447,7 +468,7 @@ class GLMPPSeq:
         for _ in progress_bar(range(num_iter)):
             amplitudes = self._update_amplitudes(data, amplitudes, phi)
             if fit_base_rates: self._update_base_rates(data, amplitudes)
-            if fit_templates: self._update_templates(data, amplitudes)
+            if fit_templates: self._update_templates(data, amplitudes, phi)
             lps.append(self.log_likelihood(data, amplitudes, phi))
 
         lps = torch.stack(lps) if num_iter > 0 else torch.tensor([])
@@ -767,18 +788,13 @@ class CAVI:
         self.num_templates = num_templates
         self.num_neurons = num_neurons
         self.template_duration = template_duration
-        # TODO[GLM]: Mirror the PPSeq changes:
-        #   • allow optional `bg_model` / `covariate_dim`
-        #   • keep `self.base_rates` as fallback/initialization only
-        #   • provide `self.background_rate(...)`
-
         # Set the device
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             if not torch.cuda.is_available():
                 print('Could not find a GPU. Defaulting to CPU instead.')
         self.device = device
-
+        
         # TODO: Initialize parameters with values if not None
         self.base_rates = torch.ones(num_neurons, device=device)
         self.template_scales = torch.ones(num_templates, num_neurons, device=device) / num_neurons
@@ -817,8 +833,6 @@ class CAVI:
         D = self.template_duration
         kernel = torch.flip(self.templates.permute(1,0,2), [2])
         rates = self.base_rates[:, None] + F.conv1d(amplitudes, kernel, padding=D-1)[:,:-D+1]
-        # TODO[GLM]: As in PPSeq, compute background via GLM if configured, and add to sequence term.
-        # Extend signature to accept `covariates` and clamp the sum.
         return torch.clamp(rates, min=1e-7)
 
     def log_likelihood(self,
@@ -841,7 +855,6 @@ class CAVI:
         Scalar log probability
         """
         rates = self.reconstruct(amplitudes)
-        # TODO[GLM]: Thread `covariates` through and call `self.reconstruct(amplitudes, covariates)`.
         if rows is None or cols is None:
             return torch.sum(dist.Poisson(rates).log_prob(data))
 
@@ -858,7 +871,6 @@ class CAVI:
         W = self.templates
        
         rates = self.reconstruct(amplitudes)
-        # TODO[GLM]: call `self.reconstruct(amplitudes, covariates)` (accept new arg).
         ratio = data / rates 
 
         alpha_post = amplitudes * F.conv1d(ratio, W, padding=D-1)[:,D-1:] + self.alpha_a0
@@ -869,9 +881,6 @@ class CAVI:
         T = data.shape[1]
         b = self.base_rates
         rates = self.reconstruct(amplitudes)
-        # TODO[GLM]: Replace constant-background update with GLM M-step as in PPSeq:
-        #   y_bg = data * bg / reconstruct(...), then optimize GLM params (α,β).
-        # Accept `covariates` arg and use a few gradient steps per EM iteration
         ratio = data / rates 
 
         alpha_post = torch.sum(ratio, dim=1) * b + self.alpha_b0
@@ -884,7 +893,6 @@ class CAVI:
         D = self.template_duration
         b, W = self.base_rates, self.templates
         rates = self.reconstruct(amplitudes)
-        # TODO[GLM]: ensure this uses dynamic background; thread `covariates` through.
         ratio = data / rates 
 
         # TODO: Double check this line
@@ -929,7 +937,6 @@ class CAVI:
         T = data.shape[1]
         avg_rate = data.mean(dim=1)
         self.base_rates = avg_rate * (1 - sequence_frac)
-        # TODO[GLM]: Initialize GLM intercepts with log(avg_rate*(1-sequence_frac)) and β near zero.
         self.template_scales = dist.Dirichlet(torch.clip(concentration * avg_rate, 1e-7)).sample(sample_shape=(K,))
         self.template_offsets = D * torch.rand(K, N, device=self.device)
         self.template_widths = torch.ones(K, N, device=self.device)
@@ -959,7 +966,6 @@ class CAVI:
         T = data.shape[1]
         avg_rate = data.mean(dim=1)
         self.base_rates = avg_rate * (1 - sequence_frac)
-        # TODO[GLM]: As above, seed GLM intercepts instead of a constant background when GLM is active.
         self.template_scales = dist.Dirichlet(concentration *
         avg_rate).sample(sample_shape=(K,))
         self.template_offsets = D * torch.rand(K, N, device=self.device)
@@ -980,7 +986,6 @@ class CAVI:
             data: Float[Tensor, "num_neurons num_timesteps"],
             num_iter: int=50,
             initialization='default',
-            # TODO[GLM]: add `covariates=None`, `num_glm_steps=5`, `glm_lr=1e-2`, `glm_l2=0.0`
             ):
         """
         Fit the model with expectation-maximization (EM).
@@ -998,9 +1003,9 @@ class CAVI:
         # Run EM
         lps = []
         for _ in progress_bar(range(num_iter)):
-            amplitudes = self._update_amplitudes(data, amplitudes) # TODO[GLM]: pass `covariates`
-            self._update_base_rates(data, amplitudes) # TODO[GLM]: pass `covariates`
-            self._update_templates(data, amplitudes) # TODO[GLM]: pass `covariates`
+            amplitudes = self._update_amplitudes(data, amplitudes)
+            self._update_base_rates(data, amplitudes)
+            self._update_templates(data, amplitudes)
             lps.append(self.log_likelihood(data, amplitudes))
 
         lps = torch.stack(lps) if num_iter > 0 else torch.tensor([])
