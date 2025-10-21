@@ -22,10 +22,45 @@ from jaxtyping import Float
 
 
 class GLMPPSeq:
-    """PPSeq is a probabilistic model for detecting sequences of spikes
-    embedded in multi-neuronal spike trains. It is based on a Poisson
-    latent variable model, akin to a non-negative, convolutional matrix
-    factorization.
+    """
+    GLMPPSeq is a probabilistic model for detecting sequential patterns in multi-neuron spike train data.
+    
+    This class generalizes the Poisson latent variable model underlying PPSeq by incorporating a Generalized Linear Model (GLM)
+    for the background firing rate, allowing for time-varying covariate effects in addition to the usual sequence-driven components.
+
+    Key Features:
+    -------------
+    - Models observed spikes as arising from a time-varying background activity (via a GLM) and discrete sequence events.
+    - Sequence events are defined by time-varying amplitudes and Gaussian-shaped templates for each sequence and neuron.
+    - Gaussian templates are parameterized by per-template, per-neuron scale (amplitude), delay (offset), and width (spread).
+    - EM algorithm (CAVI) for fitting, updating sequence amplitudes, background GLM weights, and template parameters.
+    - Background covariates can be constructed either from empirical population activity or RBF basis functions.
+    - Flexible regularization for l1/l2 sparsity and temporal smoothness.
+
+    Parameters:
+    -----------
+    num_templates (int)    : Number of latent sequence templates.
+    num_neurons (int)      : Number of neurons.
+    template_duration (int): Duration (bins) for each template.
+    alpha_a0, beta_a0      : Prior hyperparameters for amplitude updates.
+    alpha_b0, beta_b0      : Prior hyperparameters for background/GLM.
+    alpha_t0, beta_t0      : Prior hyperparameters for template weights.
+    device                 : Torch device (defaults to CUDA if available).
+    use_bias (bool)        : If True, include intercept in GLM.
+    empirical_glm (bool)   : If True, use data-derived covariates; else use fixed RBFs.
+    n_covariates (int)     : Number of covariates for GLM.
+    l1, l1_amp (float)     : L1 regularization weights for sparsity.
+    rbf_width (float)      : Width for RBF covariates (if used).
+
+    Methods:
+    --------
+    - templates: returns current Gaussian templates tensor.
+    - get_background_rates(X): computes GLM or baseline background rates.
+    - reconstruct(amplitudes, X): computes overall firing rates.
+    - log_likelihood(...): computes (subset) Poisson log-likelihood.
+    - fit(...): fits the model to data using variational EM.
+    - initialization/random/default/none: strategies for initial amplitudes and parameters.
+
     """
     base_rates : Float[Tensor, "num_neurons"]
     template_scales: Float[Tensor, "num_templates num_neurons"]
@@ -99,18 +134,18 @@ class GLMPPSeq:
         return W / W.sum(dim=2, keepdim=True) * amp[:, :, None]
 
     def get_background_rates(self, X=None):
-      """
-      Returns background rates: either constant or time-varying via GLM
-      X: (covariate_dim, num_timesteps) covariates
-      """
+        """
+        Returns background rates: either constant or time-varying via GLM
+        X: (covariate_dim, num_timesteps) covariates
+        """
 
-      # Add intercept to covariates
-      T = X.shape[1]
+        # Add intercept to covariates
+        T = X.shape[1]
 
-      # Compute GLM predictions: exp(beta^T * X)
-      eta = torch.matmul(self.beta, X)  # (N, T)
-      eta = torch.clamp(eta, min=-10, max=10)  # ADD THIS LINE
-      return torch.exp(eta)  # (N, T)
+        # Compute GLM predictions: exp(beta^T * X)
+        eta = torch.matmul(self.beta, X)  # (N, T)
+        eta = torch.clamp(eta, min=-10, max=10)  # ADD THIS LINE
+        return torch.exp(eta)  # (N, T)
 
     def reconstruct(self,
                     amplitudes: Float[Tensor, "num_templates num_timesteps"],
@@ -170,200 +205,103 @@ class GLMPPSeq:
         D, T = self.template_duration, data.shape[1]
         W = self.templates
         kernel = torch.flip(W.permute(1,0,2), [2])
-        background = self.get_background_rates(X)  # FIXED: Use GLM rates instead of self.base_rates
-        rates = background + F.conv1d(amplitudes, kernel, padding=D-1)[:,:-D+1]  # FIXED: Use GLM background
+        background = self.get_background_rates(X)
+        rates = background + F.conv1d(amplitudes, kernel, padding=D-1)[:,:-D+1]
         ratio = data / (rates + 1e-7)
 
         alpha_post = amplitudes * F.conv1d(ratio, W, padding=D-1)[:,D-1:] + self.alpha_a0
         beta_post = torch.sum(W, dim=(1,2)).unsqueeze(1).repeat(1,T) + self.beta_a0
 
-        # add soft L1 penalty
+        # soft L1 penalty
         if self.l1_amp > 0:
             alpha_post -= self.l1_amp
         
-        # if self.l2_temporal > 0:
-        #     # Compute temporal differences: a[t] - a[t-1]
-        #     diff = amplitudes[:, 1:] - amplitudes[:, :-1]
-        #     # Add penalty proportional to differences
-        #     grad_penalty = torch.zeros_like(alpha_post)
-        #     grad_penalty[:, 1:] += self.l2_temporal * diff
-        #     grad_penalty[:, :-1] -= self.l2_temporal * diff
-        #     alpha_post -= grad_penalty
-        
         return torch.clip((alpha_post - 1) / beta_post, 0)
 
-    def create_smooth_covariates(self, data=None):
+    def create_smooth_covariates(self):
         """Create smooth temporal features using Gaussian filtering or RBF basis functions"""
+        # Use slow RBF basis functions when data is not provided
+        if not hasattr(self, 'T_for_rbf'):
+            raise ValueError("Need to call create_smooth_covariates with data at least once, or set T_for_rbf")
         
-        if data is not None:
-            # Original implementation: smooth temporal features from data
-            N, T = data.shape
-            pop_rate = data.mean(dim=0)  # (T,)
-
-            # Create multiple timescales of smoothing - USE self.covariate_dim
-            # Dynamically create sigmas based on covariate_dim
-            if self.covariate_dim == 1:
-                sigmas = [50]
-            elif self.covariate_dim == 2:
-                sigmas = [25, 100]
-            elif self.covariate_dim == 3:
-                sigmas = [10, 50, 200]
-            elif self.covariate_dim == 4:
-                sigmas = [10, 30, 100, 200]
-            else:  # 5 or more
-                # Dynamically generate sigmas spread across different timescales
-                min_sigma, max_sigma = 10, 200
-                sigmas = torch.logspace(
-                    torch.log10(torch.tensor(min_sigma)), 
-                    torch.log10(torch.tensor(max_sigma)), 
-                    self.covariate_dim
-                ).tolist()
-
-            X = []
-            for sigma in sigmas:
-                # Create Gaussian kernel
-                kernel_size = int(4 * sigma) + 1
-                x = torch.arange(kernel_size, dtype=torch.float32, device=data.device) - kernel_size // 2
-                kernel = torch.exp(-x**2 / (2 * sigma**2))
-                kernel = kernel / kernel.sum()
-
-                # Smooth the population rate
-                smoothed = F.conv1d(
-                    pop_rate.unsqueeze(0).unsqueeze(0),
-                    kernel.unsqueeze(0).unsqueeze(0),
-                    padding=kernel_size//2
-                ).squeeze()
-
-                X.append(smoothed)
-
-            return torch.stack(X)  # (covariate_dim, T)
+        T = self.T_for_rbf
+        device = self.device
         
-        else:
-            # Use slow RBF basis functions when data is not provided
-            if not hasattr(self, 'T_for_rbf'):
-                raise ValueError("Need to call create_smooth_covariates with data at least once, or set T_for_rbf")
-            
-            T = self.T_for_rbf
-            device = self.device
-            
-            # Create RBF basis functions with centers spread across time
-            n_basis = self.covariate_dim 
-            centers = torch.linspace(0, T-1, n_basis, device=device)
-            width = T / (n_basis - 1) * 0.2  # Slow/wide RBFs
-            
-            # Create time indices
-            t = torch.arange(T, dtype=torch.float32, device=device)
-            
-            # Compute RBF basis functions
-            X = []
-            for c in centers:
-                rbf = torch.exp(-(t - c)**2 / (2 * width**2))
-                X.append(rbf)
-            
-            return torch.stack(X)  # (covariate_dim, T)
+        # Create RBF basis functions with centers spread across time
+        n_basis = self.covariate_dim 
+        centers = torch.linspace(0, T-1, n_basis, device=device)
+        width = T / (n_basis - 1) * 0.2  # Slow/wide RBFs
+        
+        # Create time indices
+        t = torch.arange(T, dtype=torch.float32, device=device)
+        
+        # Compute RBF basis functions
+        X = []
+        for c in centers:
+            rbf = torch.exp(-(t - c)**2 / (2 * width**2))
+            X.append(rbf)
+        
+        return torch.stack(X)  # (covariate_dim, T)
 
     def _update_base_rates(self, data, amplitudes, max_iter=10, tol=1e-4):
-      """
-      Vectorized Newton-Raphson update for GLM parameters
-      Updates all neurons simultaneously for speed
-      """
-      D = self.template_duration
-      T = data.shape[1]
-      N = self.num_neurons
+        """
+        Vectorized Newton-Raphson update for GLM parameters
+        Updates all neurons simultaneously for speed
+        """
+        D = self.template_duration
+        T = data.shape[1]
+        N = self.num_neurons
 
-      # Store T for RBF basis functions
-      self.T_for_rbf = T
+        # Store T for RBF basis functions
+        self.T_for_rbf = T
 
-      # Create smooth temporal covariates - consider using RBF basis functions
-      if self.empirical_glm:
-        X = self.create_smooth_covariates(data)
-      else:
+        # Create smooth temporal covariates - consider using RBF basis functions
         X = self.create_smooth_covariates()
-      if self.use_bias:
+        if self.use_bias:
         X = torch.cat([torch.ones(1, T, device=X.device), X], dim=0)  # (P+1, T)
 
-      # expected background
-      W = self.templates
-      kernel = torch.flip(W.permute(1,0,2), [2])
-      seq_rates = F.conv1d(amplitudes, kernel, padding=D-1)[:,:-D+1]
+        # expected background
+        W = self.templates
+        kernel = torch.flip(W.permute(1,0,2), [2])
+        seq_rates = F.conv1d(amplitudes, kernel, padding=D-1)[:,:-D+1]
 
-      #  total rates
-      # NOTE: probably shouldnt be using Beta to get background rates
-      background = self.get_background_rates(X)
-      total_rates = background + seq_rates
+        #  total rates
+        background = self.get_background_rates(X)
+        total_rates = background + seq_rates
 
-      # resid. ratio
-      # X_n,t / lambda_nt - WHY DO WE NEED THIS?
-      ratio = data / (total_rates + 1e-7)
-      expected_background = ratio * background  # E[z_{n,t,0}], shape: (N, T)
+        ratio = data / (total_rates + 1e-7)
+        expected_background = ratio * background  # E[z_{n,t,0}], shape: (N, T)
 
-      # newton updates
-      # for iter in range(max_iter):
-      #     # Current predictions for all neurons
-      #     eta = torch.matmul(self.beta, X)  # (N, T)
-      #     mu = torch.exp(eta)  # (N, T)
+        for iter in range(max_iter):
+            eta = torch.matmul(self.beta, X)  # (N, T)
+            eta = torch.clamp(eta, min=-10, max=10)  # Clamp eta before exp
+            mu = torch.exp(eta)  # (N, T)
 
-      #     # Gradient for all neurons: ∇L = X * (y - μ)
-      #     # should residuals be - X - E[z_{n,t,0}] or X - e^(B^Tx) (yes or no - determines whetehr residuals is X-EB or X-mu)
-      #     # note that this is EM on coordinated ascent VI not vanilla GLM M step
-      #     residuals = expected_background - mu  # (N, T)
-      #     # should be ^ X - **something**
-      #     gradient = torch.matmul(residuals, X.T)  # (N, P+1)
+            residuals = expected_background - mu  # (N, T)
+            gradient = torch.matmul(residuals, X.T)  # (N, P+1)
 
-      #     # Diagonal Fisher Information approximation
-      #     # For Poisson: Fisher = X * diag(μ) * X^T
-      #     # We approximate with diagonal: Fisher_diag = Σ_t μ_{n,t} * x_t^2
-      #     fisher_diag = torch.matmul(mu, (X.T)**2)  # (N, P+1)
+            fisher_diag = torch.matmul(mu, (X.T)**2)  # (N, P+1)
 
-      #     # Newton step with diagonal approximation
-      #     # β_new = β_old + Fisher^(-1) * gradient
-      #     delta = gradient / (fisher_diag + 1e-4)  # Add regularization for stability
-      #     # Update all betas simultaneously
-      #     # self.beta = self.beta + delta
-      #     self.beta = self.beta + 0.1 * delta  # Add step size of 0.1
+            # Add stronger regularization
+            delta = gradient / (fisher_diag + 1e-2)  # Increased from 1e-4
 
+            # Clip gradients to prevent explosion
+            delta = torch.clamp(delta, min=-1.0, max=1.0)
 
-      #     """
-      #     we couldve done SGD
-      #     or first order updates
-      #     self.beta += delta * gradient
+            # Check for NaN/Inf before updating
+            if torch.isnan(delta).any() or torch.isinf(delta).any():
+                print("Warning: NaN or Inf detected in GLM update, stopping iteration")
+                break
 
-      #     or second order as done above
-      #     """
+            self.beta = self.beta + 0.1 * delta
 
-      #     # Check convergence (using Frobenius norm for matrix)
-      #     if torch.norm(delta) < tol:
-      #         break
-      for iter in range(max_iter):
-          eta = torch.matmul(self.beta, X)  # (N, T)
-          eta = torch.clamp(eta, min=-10, max=10)  # Clamp eta before exp
-          mu = torch.exp(eta)  # (N, T)
+            # Check beta for NaN/Inf
+            if torch.isnan(self.beta).any() or torch.isinf(self.beta).any():
+                print("Warning: NaN or Inf in beta parameters")
+                self.beta = torch.nan_to_num(self.beta, nan=0.0, posinf=10.0, neginf=-10.0)
 
-          residuals = expected_background - mu  # (N, T)
-          gradient = torch.matmul(residuals, X.T)  # (N, P+1)
-
-          fisher_diag = torch.matmul(mu, (X.T)**2)  # (N, P+1)
-
-          # Add stronger regularization
-          delta = gradient / (fisher_diag + 1e-2)  # Increased from 1e-4
-
-          # Clip gradients to prevent explosion
-          delta = torch.clamp(delta, min=-1.0, max=1.0)
-
-          # Check for NaN/Inf before updating
-          if torch.isnan(delta).any() or torch.isinf(delta).any():
-              print("Warning: NaN or Inf detected in GLM update, stopping iteration")
-              break
-
-          self.beta = self.beta + 0.1 * delta
-
-          # Check beta for NaN/Inf
-          if torch.isnan(self.beta).any() or torch.isinf(self.beta).any():
-              print("Warning: NaN or Inf in beta parameters")
-              self.beta = torch.nan_to_num(self.beta, nan=0.0, posinf=10.0, neginf=-10.0)
-
-          if torch.norm(delta) < tol:
-              break
+            if torch.norm(delta) < tol:
+                break
 
 
     def _update_templates(self,
@@ -484,7 +422,6 @@ class GLMPPSeq:
         K = self.num_templates
         T = data.shape[1]
 
-        # amplitudes = torch.ones((K, T))
         amplitudes = dist.Uniform(0, 1).sample((K, T))
         return amplitudes
 
@@ -514,10 +451,7 @@ class GLMPPSeq:
         data = data.to(self.device)
 
         # Create covariates
-        if self.empirical_glm:
-          phi = self.create_smooth_covariates(data)
-        else:
-          phi = self.create_smooth_covariates()
+        phi = self.create_smooth_covariates()
         if self.use_bias:
           phi = torch.cat([torch.ones(1, T, device=phi.device), phi], dim=0)  # (P+1, T)
 
@@ -525,14 +459,13 @@ class GLMPPSeq:
         # Run EM
         lps = []
         for _ in progress_bar(range(num_iter)):
-            amplitudes = self._update_amplitudes(data, amplitudes, phi)  # FIXED: Pass X
+            amplitudes = self._update_amplitudes(data, amplitudes, phi)
             if fit_base_rates: self._update_base_rates(data, amplitudes)
             if fit_templates: self._update_templates(data, amplitudes)
-            lps.append(self.log_likelihood(data, amplitudes, phi))  # FIXED: Pass X
+            lps.append(self.log_likelihood(data, amplitudes, phi))
 
         lps = torch.stack(lps) if num_iter > 0 else torch.tensor([])
         return lps, amplitudes
-
 
 
 class PPSeq:
